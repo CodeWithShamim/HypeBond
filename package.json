@@ -1,0 +1,16 @@
+{
+  "name": "hypebond",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HypeBond — influencer ad-deals bonded in escrow and verified by GenLayer AI validators reading the live post",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @hypebond/web dev",
+    "build": "pnpm --filter @hypebond/shared build && pnpm --filter @hypebond/web build",
+    "preview": "pnpm --filter @hypebond/web preview",
+    "typecheck": "pnpm --filter @hypebond/web typecheck",
+    "deploy:contract": "node packages/contracts/scripts/deploy.mjs",
+    "lint:genvm": "uvx --from genvm-linter genvm-lint check packages/contracts/hypebond.py"
+  },
+  "packageManager": "pnpm@10.18.2"
+}
