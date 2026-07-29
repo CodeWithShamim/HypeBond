@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --void: #0d0b14;
+  --hype: #ff3d8a;
+  --volt: #d4ff3d;
+  --pulse: #7a5cff;
+  --heat: #ff7a3d;
+  --bone: #f4f2ff;
+  --static: #2a2540;
+}
+
+html {
+  background: var(--void);
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-void text-bone font-body antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--hype);
+  color: var(--void);
+}
+
+/* thin, on-brand scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--static) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--static);
+  border-radius: 4px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--pulse);
+  outline-offset: 2px;
+}
+
+/* gradient text for the wordmark / hero */
+.text-bond {
+  background: linear-gradient(135deg, #ff3d8a 0%, #7a5cff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* range slider skin (min live days) */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--static);
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #ff3d8a 0%, #7a5cff 100%);
+  border: 2px solid var(--bone);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #ff3d8a 0%, #7a5cff 100%);
+  border: 2px solid var(--bone);
+}
