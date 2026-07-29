@@ -56,19 +56,65 @@ export const PLATFORM_DOMAINS: Record<Platform, string[]> = {
   tiktok: ["tiktok.com"],
 };
 
-/** Client-side mirror of the contract's URL check: https + platform domain. */
+export const MAX_URL_CHARS = 500;
+
+/**
+ * Characters the contract permits in a submitted URL (RFC 3986 unreserved +
+ * reserved + "%"). Must stay in lockstep with URL_SAFE_CHARS in hypebond.py —
+ * the contract rejects everything else, so accepting more here just produces
+ * a confusing on-chain revert instead of an inline form error.
+ */
+const URL_SAFE_RE = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
+const HOST_SAFE_RE = /^[a-z0-9-.]+$/;
+
+/**
+ * Client-side mirror of the contract's URL check: https, safe characters
+ * only, and a host on the platform's domain.
+ *
+ * Note this deliberately does NOT lean on `new URL()` alone — the contract
+ * parses the authority by hand, and a URL the browser normalizes (e.g. one
+ * containing "\") could otherwise look valid here and revert on-chain.
+ */
 export function isValidPostUrl(url: string, platform: Platform): boolean {
+  if (url.length > MAX_URL_CHARS) return false;
   if (!url.startsWith("https://")) return false;
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
+  if (!URL_SAFE_RE.test(url)) return false;
+
+  const rest = url.slice("https://".length);
+  const authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0];
+  let host = authority.split("@").pop()!.split(":", 1)[0].toLowerCase();
   if (host.startsWith("www.")) host = host.slice(4);
+  if (!host || !HOST_SAFE_RE.test(host)) return false;
+
   return PLATFORM_DOMAINS[platform].some(
     (d) => host === d || host.endsWith("." + d)
   );
+}
+
+/**
+ * Prompt-structure markers the contract refuses inside deal terms. Terms sit
+ * in a delimited region of the judging prompt; text that closes that region
+ * early could script the verdict, so `create_deal` reverts on these.
+ */
+const PROMPT_MARKERS = [
+  "<<<page>>>",
+  "<<<end page>>>",
+  "--- begin deal terms ---",
+  "--- end deal terms ---",
+];
+
+/**
+ * Mirror of the contract's `_check_terms_safe`. Returns an error string, or
+ * null when the terms are acceptable.
+ */
+export function termsProblem(terms: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000B-\u001F]/.test(terms))
+    return "Terms contain unsupported control characters.";
+  const flat = terms.toLowerCase().split(/\s+/).join(" ");
+  if (PROMPT_MARKERS.some((m) => flat.includes(m)))
+    return "Terms may not contain prompt delimiter markers.";
+  return null;
 }
 
 // ---------------------------------------------------------------- deal
@@ -86,6 +132,7 @@ export interface Deal {
   submitted_at: number;
   verify_after: number;
   grace_until: number;
+  last_check_at: number;
   status: DealStatus;
   verdict_reason: string;
   checks_passed: string; // JSON string of per-criterion results
@@ -189,6 +236,7 @@ export function parseDeal(v: unknown): Deal | null {
     submitted_at: num(r.submitted_at),
     verify_after: num(r.verify_after),
     grace_until: num(r.grace_until),
+    last_check_at: num(r.last_check_at),
     status: dealStatus(r.status),
     verdict_reason: str(r.verdict_reason),
     checks_passed: str(r.checks_passed),
@@ -260,9 +308,27 @@ export const GRACE_HOURS = 48;
 export const TERMS_MIN = 50;
 export const TERMS_MAX = 4000;
 
+/**
+ * Escape hatch: how long a check that never reaches a verdict stays retryable
+ * before the brand may reclaim. Mirrors STALE_WINDOW in hypebond.py.
+ */
+export const STALE_WINDOW_DAYS = 14;
+
 /** Deadline for the brand's no-submission timeout claim. */
 export function submitDeadline(d: Deal): number {
   return d.created_at + SUBMIT_WINDOW_DAYS * SECONDS_PER_DAY;
+}
+
+/**
+ * When the brand may reclaim escrow from a deal whose verification never
+ * resolved, or null when the status has no stale-timeout path. Mirrors the
+ * SUBMITTED / VERIFYING branches of `claim_timeout`.
+ */
+export function staleDeadline(d: Deal): number | null {
+  const stale = STALE_WINDOW_DAYS * SECONDS_PER_DAY;
+  if (d.status === "SUBMITTED") return d.submitted_at + stale;
+  if (d.status === "VERIFYING") return d.verify_after + stale;
+  return null;
 }
 
 /** Bond serial rendered like HB-000042. */

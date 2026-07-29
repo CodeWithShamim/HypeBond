@@ -47,6 +47,38 @@ pnpm dev
 Other commands: `pnpm build` (typecheck + production build),
 `pnpm lint:genvm` (contract lint/validation via genvm-linter).
 
+## Tests
+
+```sh
+pnpm verify          # typecheck + every test + production build
+pnpm test            # contract + frontend suites
+pnpm test:contract   # contract only  (python3, stdlib — no install needed)
+pnpm test:web        # frontend only  (vitest)
+pnpm test:watch      # vitest in watch mode
+```
+
+**Contract** (`packages/contracts/tests/`) — runs `hypebond.py` in plain
+CPython against a stub of the GenVM runtime (`tests/stubs/genlayer.py`), so
+no node, no deploy, no `genlayer` install. The stub models storage as live
+references, range-checks `u256`/`u8`, and rolls the whole world back on a
+revert, so a checks-effects-interactions violation shows up as a transfer
+that survived a failed call. Web fetches, model output and consensus are
+programmable per test — including the "validators disagreed" path.
+
+Covers the lifecycle end to end plus the invariants above: escrow
+accounting (every terminal path conserves value, no double payout), the
+fail-closed paths, verdict aggregation, prompt-injection defenses, and the
+URL host-confusion matrix. A drift guard fails the suite if the deal
+fields, statuses or platform domains stop matching `packages/shared`.
+
+**Frontend** (vitest + jsdom) — `packages/shared` logic (URL rules mirrored
+against the contract, terms builder, chain-state parsing), escrow
+formatting, GenVM receipt decoding (a missed revert would report a failed
+transaction as confirmed), timeline derivation, and component rendering.
+
+`pnpm test:smoke` additionally exercises a **deployed** contract on
+studionet — it needs a running GenLayer Studio and a deployed address.
+
 ## Security model (contract)
 
 - **Checks-effects-interactions everywhere**: terminal status + `settled`

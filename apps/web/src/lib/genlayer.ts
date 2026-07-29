@@ -32,8 +32,23 @@ export function burnerPrivateKey(): `0x${string}` {
 
 export type WalletKind = "metamask" | "burner";
 
-let client: GenLayerClient<GenLayerChain> | null = null;
-let clientKey = "";
+/**
+ * Keyed cache. A single slot would thrash: every read went through the
+ * burner key and evicted the MetaMask-bound client (and vice versa), so an
+ * alternating read/write sequence rebuilt a client on every call.
+ */
+const clients = new Map<string, GenLayerClient<GenLayerChain>>();
+
+function cached(
+  key: string,
+  make: () => GenLayerClient<GenLayerChain>
+): GenLayerClient<GenLayerChain> {
+  const hit = clients.get(key);
+  if (hit) return hit;
+  const made = make();
+  clients.set(key, made);
+  return made;
+}
 
 /**
  * Client bound to the connected account. MetaMask accounts are passed as a
@@ -44,21 +59,23 @@ export function genlayerClient(
   kind: WalletKind,
   address: `0x${string}` | null
 ): GenLayerClient<GenLayerChain> {
-  const key = `${NETWORK}:${kind}:${address ?? "read-only"}`;
-  if (client && clientKey === key) return client;
-  client = createClient({
-    chain: CHAIN,
-    ...(kind === "metamask" && address
-      ? { account: address }
-      : { account: createAccount(burnerPrivateKey()) }),
-  });
-  clientKey = key;
-  return client;
+  if (kind === "metamask" && address) {
+    return cached(`${NETWORK}:metamask:${address}`, () =>
+      createClient({ chain: CHAIN, account: address })
+    );
+  }
+  return cached(`${NETWORK}:burner`, () =>
+    createClient({ chain: CHAIN, account: createAccount(burnerPrivateKey()) })
+  );
 }
 
-/** Read-only client (no wallet needed). */
+/**
+ * Read-only client. Deliberately account-less: reads need no signer, and
+ * routing them through the burner minted + persisted a private key in
+ * localStorage for visitors who never asked for a wallet.
+ */
 export function readClient(): GenLayerClient<GenLayerChain> {
-  return genlayerClient("burner", null);
+  return cached(`${NETWORK}:read-only`, () => createClient({ chain: CHAIN }));
 }
 
 let consensusReady: Promise<void> | null = null;
@@ -88,6 +105,51 @@ export function getEthereum(): EthereumProvider | null {
 
 export function hasMetaMask(): boolean {
   return getEthereum() !== null;
+}
+
+/**
+ * Wallet extensions inject `window.ethereum` asynchronously, so a single
+ * check at first render reports "not installed" for users who do have it.
+ * Resolves as soon as the provider appears, or false after a short grace.
+ */
+export function detectMetaMask(timeoutMs = 3000): Promise<boolean> {
+  if (hasMetaMask()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (found: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(timer);
+      window.removeEventListener("ethereum#initialized", onInit);
+      resolve(found);
+    };
+    const onInit = () => done(true);
+    window.addEventListener("ethereum#initialized", onInit, { once: true });
+    const poll = setInterval(() => hasMetaMask() && done(true), 200);
+    const timer = setTimeout(() => done(hasMetaMask()), timeoutMs);
+  });
+}
+
+/**
+ * Assert the wallet is on the GenLayer chain, switching if not.
+ *
+ * Connect-time is not enough: the user can switch networks in MetaMask at any
+ * point afterwards, and a write sent on the wrong chain either fails opaquely
+ * or lands somewhere it shouldn't.
+ */
+export async function ensureCorrectChain(): Promise<void> {
+  const eth = getEthereum();
+  if (!eth) return;
+  const wanted = `0x${CHAIN.id.toString(16)}`;
+  let current: string | null = null;
+  try {
+    current = (await eth.request({ method: "eth_chainId" })) as string;
+  } catch {
+    current = null;
+  }
+  if (current?.toLowerCase() === wanted.toLowerCase()) return;
+  await addGenLayerNetwork();
 }
 
 /** Prompt MetaMask to add + switch to the GenLayer network. */

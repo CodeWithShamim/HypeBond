@@ -8,6 +8,7 @@ import {
 import {
   CONTRACT_ADDRESS,
   ensureConsensus,
+  ensureCorrectChain,
   genlayerClient,
   readClient,
   type WalletKind,
@@ -111,6 +112,8 @@ async function write(
   value: bigint = 0n
 ): Promise<string> {
   const client = genlayerClient(kind, address);
+  // The user may have switched networks since connecting.
+  if (kind === "metamask") await ensureCorrectChain();
   await ensureConsensus(client);
   const hash = await client.writeContract({
     address: CONTRACT_ADDRESS,
@@ -151,15 +154,22 @@ export const writes = {
     write(w, "claim_timeout", [dealId]),
 };
 
-/** After create_deal: newest deal id for this brand (the one just minted). */
+/**
+ * After create_deal: newest deal id for this brand (the one just minted).
+ *
+ * `offset` indexes the brand's OWN deal array, not the global deal list, so
+ * it has to be walked from 0 — a global count would skip straight past a
+ * brand with only a handful of deals and come back empty.
+ */
+const PAGE = 50;
+const MAX_PAGES = 40; // 2000 deals for one brand; a stop, not an expectation
+
 export async function latestBrandDealId(addr: string): Promise<number | null> {
-  const total = await reads.dealCount();
-  const offset = Math.max(0, total - 50);
-  const deals = await reads.brandDeals(addr, offset, 50);
-  if (deals.length === 0) {
-    const first = await reads.brandDeals(addr, 0, 50);
-    if (first.length === 0) return null;
-    return first.reduce((m, d) => Math.max(m, d.id), 0);
+  let best: number | null = null;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const deals = await reads.brandDeals(addr, page * PAGE, PAGE);
+    for (const d of deals) if (best === null || d.id > best) best = d.id;
+    if (deals.length < PAGE) break; // short page = last page
   }
-  return deals.reduce((m, d) => Math.max(m, d.id), 0);
+  return best;
 }

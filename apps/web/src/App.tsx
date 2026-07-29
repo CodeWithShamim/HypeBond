@@ -7,6 +7,7 @@ import { ToastProvider } from "@/lib/toast";
 import { BootLoader } from "@/components/motion/BootLoader";
 import { PageFrame } from "@/components/motion/PageTransition";
 import { Shell } from "@/components/Shell";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Landing } from "@/pages/Landing";
 import { NewDeal } from "@/pages/NewDeal";
 import { DealPage } from "@/pages/DealPage";
@@ -77,7 +78,10 @@ export default function App() {
         <ToastProvider>
           {!booted && <BootLoader onComplete={() => setBooted(true)} />}
           <Shell>
-            <AnimatedRoutes />
+            {/* Inside the Shell so a crashed route keeps nav + wallet usable. */}
+            <ErrorBoundary>
+              <AnimatedRoutes />
+            </ErrorBoundary>
           </Shell>
         </ToastProvider>
       </WalletProvider>

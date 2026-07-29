@@ -14,4 +14,22 @@ export default defineConfig({
       "@": resolve(here, "src"),
     },
   },
+  build: {
+    // genlayer-js pulls in viem and dominates the bundle. Splitting it from
+    // the app code means a UI change no longer invalidates ~500 kB of vendor
+    // JS in every returning visitor's cache.
+    //
+    // Only the chain stack is split out: framer-motion and React import each
+    // other's internals, and separating them produced a circular chunk graph
+    // (motion -> vendor -> motion), which risks module-init order bugs at
+    // runtime for a few kB of cache granularity.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          chain: ["genlayer-js"],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 700,
+  },
 });

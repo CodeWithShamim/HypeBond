@@ -4,6 +4,7 @@ import {
   dealSerial,
   isValidPostUrl,
   PLATFORM_LABELS,
+  staleDeadline,
   submitDeadline,
   type Deal,
 } from "@hypebond/shared";
@@ -19,6 +20,7 @@ import { useWallet } from "@/lib/wallet";
 import {
   countdownLabel,
   countdownTo,
+  errorMessage,
   formatDate,
   formatGen,
   shortAddr,
@@ -131,6 +133,9 @@ export function DealPage() {
     !!deal && deal.status === "FUNDED" && now / 1000 >= submitDeadline(deal);
   const graceTimeoutReady =
     !!deal && deal.status === "GRACE_PERIOD" && now / 1000 >= deal.grace_until;
+  // Verification never resolved — the brand's last-resort reclaim.
+  const staleAt = deal ? staleDeadline(deal) : null;
+  const staleTimeoutReady = staleAt !== null && now / 1000 >= staleAt;
 
   if (!CONTRACT_CONFIGURED) {
     return (
@@ -151,7 +156,7 @@ export function DealPage() {
     );
   }
   if (error) {
-    return <ErrorStrip>Could not load the bond: {String(error)}</ErrorStrip>;
+    return <ErrorStrip>Could not load the bond: {errorMessage(error)}</ErrorStrip>;
   }
   if (!deal) {
     return (
@@ -200,14 +205,22 @@ export function DealPage() {
             {deal.post_url && (
               <p className="sm:col-span-2">
                 <span className="text-bone/35">post </span>
-                <a
-                  href={deal.post_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="break-all text-pulse underline"
-                >
-                  {deal.post_url}
-                </a>
+                {/* Only linkify what still passes the platform URL rules —
+                    never hand an arbitrary stored string to href. */}
+                {isValidPostUrl(deal.post_url, deal.platform) ? (
+                  <a
+                    href={deal.post_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="break-all text-pulse underline"
+                  >
+                    {deal.post_url}
+                  </a>
+                ) : (
+                  <span className="break-all text-bone/60">
+                    {deal.post_url}
+                  </span>
+                )}
               </p>
             )}
           </div>
@@ -377,6 +390,25 @@ export function DealPage() {
                     onClick={() => timeout.mutate({ dealId: deal.id })}
                   >
                     Claim grace-period timeout
+                  </Button>
+                </div>
+              )}
+
+              {/* Verification stuck: retries stay open to anyone for 14 days,
+                  after which the brand can reclaim rather than leaving the
+                  escrow locked forever. */}
+              {isBrand && staleTimeoutReady && (
+                <div className="mt-5 space-y-3 border-t-2 border-static pt-5">
+                  <p className="font-mono text-xs text-bone/40">
+                    Verification never reached a verdict in 14 days. You can
+                    reclaim the escrow.
+                  </p>
+                  <Button
+                    variant="danger"
+                    loading={timeout.isPending}
+                    onClick={() => timeout.mutate({ dealId: deal.id })}
+                  >
+                    Reclaim stalled escrow
                   </Button>
                 </div>
               )}

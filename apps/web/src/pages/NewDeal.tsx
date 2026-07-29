@@ -8,6 +8,7 @@ import {
   PLATFORM_LABELS,
   TERMS_MAX,
   TERMS_MIN,
+  termsProblem,
   type Platform,
 } from "@hypebond/shared";
 import { useCreateDeal } from "@/hooks/useHypebond";
@@ -82,7 +83,11 @@ export function NewDeal() {
   const influencerOk =
     ADDR_RE.test(influencer.trim()) && influencer.trim().toLowerCase() !== me;
   const escrowOk = escrow !== null && escrow > 0n;
-  const termsOk = terms.length >= TERMS_MIN && terms.length <= TERMS_MAX;
+  // The contract rejects prompt-delimiter markers in terms, so catch it here
+  // rather than letting the brand pay gas to learn that.
+  const termsIssue = termsProblem(terms);
+  const termsLengthOk = terms.length >= TERMS_MIN && terms.length <= TERMS_MAX;
+  const termsOk = termsLengthOk && termsIssue === null;
 
   const stepOk = [influencerOk, escrowOk, termsOk, true][step];
 
@@ -366,11 +371,15 @@ export function NewDeal() {
                       </span>
                     </span>
                     <MonoBlock>{terms}</MonoBlock>
-                    {!termsOk && (
+                    {!termsLengthOk ? (
                       <p className="mt-1.5 font-mono text-xs text-heat">
                         Terms must be {TERMS_MIN}–{TERMS_MAX} characters.
                       </p>
-                    )}
+                    ) : termsIssue ? (
+                      <p className="mt-1.5 font-mono text-xs text-heat">
+                        {termsIssue}
+                      </p>
+                    ) : null}
                   </div>
                 </>
               )}

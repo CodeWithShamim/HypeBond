@@ -25,8 +25,14 @@ SECURITY INVARIANTS
   set BEFORE any transfer. Every money-moving method reverts if `settled`.
 - Verification FAILS CLOSED: unusable AI output leaves status unchanged and
   emits VerificationErrored — it never pays out and never refunds.
-- Fetched page content is UNTRUSTED and is delimited + guarded against
-  prompt injection in the judging prompt.
+- NO STATE LOCKS THE ESCROW FOREVER. Every non-terminal status has a brand
+  timeout claim, and `grace_until` is set once so a failing influencer cannot
+  extend it by resubmitting. Retry paths (`recheck_post`, `finalize`) stay
+  open to anyone for the full STALE_WINDOW before a timeout unlocks.
+- Every untrusted string reaching the judging prompt is constrained: the post
+  URL to a strict character allowlist, the fetched page to marker-neutralized
+  text, and the deal terms to marker-free content. Neither party can close
+  its delimited region and rewrite the judge's task.
 - No unbounded loops in public methods: per-user index arrays + paged views.
 - All timestamps come from the block context, never from user input.
 """
@@ -52,8 +58,38 @@ CANCELLED = "CANCELLED"
 SECONDS_PER_DAY = 86400
 SUBMIT_WINDOW = 14 * SECONDS_PER_DAY  # brand timeout if no post submitted
 GRACE_WINDOW = 48 * 3600  # influencer window to fix a failed check
+# Escape hatch: a check that never reaches a usable verdict must not lock the
+# escrow forever. `finalize`/`recheck_post` stay callable by ANYONE for this
+# long before the brand may reclaim.
+STALE_WINDOW = 14 * SECONDS_PER_DAY
+RECHECK_COOLDOWN = 300  # min seconds between AI re-checks (anti-spam)
 
 MAX_PAGE_CHARS = 6000  # cap of fetched post text fed to the judge
+MAX_URL_CHARS = 500
+
+# Characters permitted in a submitted URL (RFC 3986 unreserved + reserved +
+# "%"). Everything else — whitespace, newlines, control bytes, "\", "<", ">",
+# quotes, backticks — is rejected. This is a SECURITY control, not tidiness:
+# the URL is interpolated into the judging prompt, and a backslash would let
+# `https://evil.com\.x.com` pass the platform-domain check while WHATWG URL
+# parsers fetch `evil.com`.
+URL_SAFE_CHARS = frozenset(
+	"abcdefghijklmnopqrstuvwxyz"
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	"0123456789"
+	"-._~:/?#[]@!$&'()*+,;=%"
+)
+HOST_SAFE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-.")
+
+# Prompt-structure markers. Untrusted text (fetched page) is neutralized and
+# semi-trusted text (deal terms) is rejected if it contains these, so neither
+# party can break out of its delimited region and rewrite the judge's task.
+PROMPT_MARKERS = (
+	"<<<page>>>",
+	"<<<end page>>>",
+	"--- begin deal terms ---",
+	"--- end deal terms ---",
+)
 
 # Must stay in lockstep with PLATFORM_DOMAINS in packages/shared.
 PLATFORM_DOMAINS: dict[str, list[str]] = {
@@ -79,9 +115,10 @@ class Deal:
 	platform: str  # "x" | "instagram" | "youtube" | "tiktok"
 	min_live_days: u8  # how long the post must stay live
 	created_at: u256
-	submitted_at: u256  # block timestamp of URL submission
+	submitted_at: u256  # block timestamp of the latest URL submission
 	verify_after: u256  # timestamp when final verification is allowed
-	grace_until: u256  # resubmission deadline while in GRACE_PERIOD
+	grace_until: u256  # resubmission deadline — set ONCE, never extended
+	last_check_at: u256  # last AI check attempt, for the recheck cooldown
 	status: str
 	verdict_reason: str  # AI-written explanation of pass/fail
 	checks_passed: str  # JSON string of per-criterion results
@@ -125,6 +162,25 @@ class DealCancelled(gl.Event):
 	def __init__(self, deal_id: u256, /): ...
 
 
+# ---------------------------------------------------------------- verdict parsing
+
+
+def _verdict_bool(value: typing.Any) -> bool:
+	"""Read a boolean out of model-produced JSON, failing closed.
+
+	NEVER use bare bool() here. Models routinely emit string booleans, and
+	`bool("false")` is True — that single coercion would turn a failed check
+	into a released escrow. Only a real JSON `true`, or an explicit
+	affirmative spelling of one, counts as a pass; everything else
+	(including "false", "no", null, numbers and objects) reads as False.
+	"""
+	if value is True:
+		return True
+	if isinstance(value, str):
+		return value.strip().lower() in ("true", "yes")
+	return False
+
+
 # ---------------------------------------------------------------- contract
 
 
@@ -157,21 +213,81 @@ class HypeBond(gl.Contract):
 			raise gl.vm.UserError("deal already settled")
 
 	def _check_post_url(self, url: str, platform: str) -> None:
-		"""URL must be https on one of the platform's domains."""
+		"""URL must be https, made only of safe URL characters, and served
+		from one of the platform's domains.
+
+		The character allowlist is load-bearing twice over: it stops host
+		spoofing via characters that URL parsers treat as delimiters but a
+		naive split does not (notably "\\"), and it stops the influencer from
+		smuggling newlines or prompt text into the judging prompt through the
+		URL path.
+		"""
 		domains = PLATFORM_DOMAINS.get(platform)
 		if domains is None:
 			raise gl.vm.UserError("unknown platform")
+		if len(url) > MAX_URL_CHARS:
+			raise gl.vm.UserError("post URL too long")
 		if not url.startswith("https://"):
 			raise gl.vm.UserError("post URL must start with https://")
+		if any(ch not in URL_SAFE_CHARS for ch in url):
+			raise gl.vm.UserError("post URL contains invalid characters")
+
 		rest = url[len("https://") :]
-		host = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].lower()
-		if "@" in host or ":" in host:
-			host = host.split("@")[-1].split(":")[0]
+		authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+		host = authority.split("@")[-1].split(":", 1)[0].lower()
 		if host.startswith("www."):
 			host = host[4:]
+		if not host or any(ch not in HOST_SAFE_CHARS for ch in host):
+			raise gl.vm.UserError("post URL has an invalid host")
 		ok = any(host == dom or host.endswith("." + dom) for dom in domains)
 		if not ok:
 			raise gl.vm.UserError(f"URL host does not match platform '{platform}'")
+
+	def _check_terms_safe(self, terms: str) -> None:
+		"""Reject terms that try to break out of their delimited region.
+
+		Terms are written by the brand and sit inside BEGIN/END markers in the
+		judging prompt. A brand that could close that region early would be
+		able to script the verdict — e.g. forcing a fail to get the escrow back
+		after the influencer already did the work.
+		"""
+		if any(ord(ch) < 32 and ch not in "\n\t" for ch in terms):
+			raise gl.vm.UserError("terms contain unsupported control characters")
+		# Collapse whitespace so spacing variants of a marker are still caught.
+		flat = " ".join(terms.lower().split())
+		if any(marker in flat for marker in PROMPT_MARKERS):
+			raise gl.vm.UserError("terms may not contain prompt delimiter markers")
+
+	def _neutralize_page(self, text: str) -> str:
+		"""Defang prompt-structure markers in fetched page content.
+
+		The influencer controls the text of their own post, so the page body is
+		fully attacker-chosen. Without this, posting the literal string
+		"<<<END PAGE>>>" followed by instructions would end the untrusted
+		region and let the post dictate its own verdict.
+
+		Matching is case-insensitive via an ASCII-only fold. str.lower() is
+		NOT safe here: it can change a string's length (e.g. "İ" lowers to two
+		code points), which would desync the offsets used to splice `text`.
+		"""
+
+		def fold(s: str) -> str:
+			# Length-preserving by construction — one char in, one char out.
+			return "".join(
+				chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s
+			)
+
+		out = text
+		folded = fold(out)
+		for marker in PROMPT_MARKERS:  # already lowercase ASCII
+			i = folded.find(marker)
+			while i != -1:
+				out = out[:i] + "[redacted-marker]" + out[i + len(marker) :]
+				folded = fold(out)
+				# Resume past the replacement; it contains no marker, so this
+				# always terminates.
+				i = folded.find(marker, i + len("[redacted-marker]"))
+		return out
 
 	# ------------------------------------------------------------ writes
 
@@ -196,12 +312,15 @@ class HypeBond(gl.Contract):
 			raise gl.vm.UserError("escrow amount must be positive")
 		if influencer_addr == brand:
 			raise gl.vm.UserError("influencer must differ from the brand")
+		if influencer_addr.as_hex.lower() == "0x" + "0" * 40:
+			raise gl.vm.UserError("influencer must not be the zero address")
 		if platform not in PLATFORM_DOMAINS:
 			raise gl.vm.UserError("platform must be x, instagram, youtube or tiktok")
 		if not (1 <= days <= 30):
 			raise gl.vm.UserError("min_live_days must be between 1 and 30")
 		if not (50 <= len(terms) <= 4000):
 			raise gl.vm.UserError("terms must be 50-4000 characters")
+		self._check_terms_safe(terms)
 
 		deal_id = int(self.next_deal_id)
 		self.next_deal_id = u256(deal_id + 1)
@@ -218,6 +337,7 @@ class HypeBond(gl.Contract):
 			submitted_at=u256(0),
 			verify_after=u256(0),
 			grace_until=u256(0),
+			last_check_at=u256(0),
 			status=FUNDED,
 			verdict_reason="",
 			checks_passed="",
@@ -236,6 +356,7 @@ class HypeBond(gl.Contract):
 		the 48h window (fix/repost after a failed check).
 		"""
 		d = self._deal_or_revert(int(deal_id))
+		self._require_unsettled(d)
 		if gl.message.sender_address != d.influencer:
 			raise gl.vm.UserError("only the deal's influencer can submit the post")
 		if d.status not in (FUNDED, GRACE_PERIOD):
@@ -243,8 +364,6 @@ class HypeBond(gl.Contract):
 		if d.status == GRACE_PERIOD and self._now() >= int(d.grace_until):
 			raise gl.vm.UserError("grace period has ended")
 		post_url = post_url.strip()
-		if len(post_url) > 500:
-			raise gl.vm.UserError("post URL too long")
 		self._check_post_url(post_url, d.platform)
 
 		now = self._now()
@@ -258,10 +377,17 @@ class HypeBond(gl.Contract):
 
 	@gl.public.write
 	def recheck_post(self, deal_id: u256) -> None:
-		"""Retry an initial check that errored (status stuck at SUBMITTED)."""
+		"""Retry an initial check that errored (status stuck at SUBMITTED).
+
+		Open to anyone so a stuck deal is never hostage to one party, but rate
+		limited: each attempt costs validator work, so allow one per cooldown.
+		"""
 		d = self._deal_or_revert(int(deal_id))
+		self._require_unsettled(d)
 		if d.status != SUBMITTED:
 			raise gl.vm.UserError("deal has no pending initial check")
+		if self._now() < int(d.last_check_at) + RECHECK_COOLDOWN:
+			raise gl.vm.UserError("a check ran recently — wait before retrying")
 		self._run_check(d, final=False)
 
 	@gl.public.write
@@ -313,6 +439,19 @@ class HypeBond(gl.Contract):
 			if now < int(d.grace_until):
 				raise gl.vm.UserError("grace period has not lapsed yet")
 			reason = "The failed post was not fixed within the 48h grace period; escrow reclaimed by the brand."
+		elif d.status == SUBMITTED:
+			# Initial check never produced a usable verdict. `recheck_post` is
+			# open to anyone for the whole stale window before this unlocks.
+			if now < int(d.submitted_at) + STALE_WINDOW:
+				raise gl.vm.UserError("initial check is still retryable")
+			reason = "The initial check never reached a verdict within 14 days; escrow reclaimed by the brand."
+		elif d.status == VERIFYING:
+			# Final verification never resolved. `finalize` is open to anyone
+			# from verify_after until this window lapses, so the influencer has
+			# a full 14 days to get a successful settlement through.
+			if now < int(d.verify_after) + STALE_WINDOW:
+				raise gl.vm.UserError("final verification is still available")
+			reason = "Final verification never reached a verdict within 14 days of the live window; escrow reclaimed by the brand."
 		else:
 			raise gl.vm.UserError("deal is not in a timeout-claimable state")
 		# Effects before interaction.
@@ -331,6 +470,7 @@ class HypeBond(gl.Contract):
 		status is left unchanged (SUBMITTED / VERIFYING), an event is
 		emitted, and no funds move. Never defaults to PASS.
 		"""
+		d.last_check_at = u256(self._now())
 		passed, reason, checks_json, ok = self._verify(d, final)
 		if not ok:
 			VerificationErrored(u256(int(d.id))).emit()
@@ -357,7 +497,12 @@ class HypeBond(gl.Contract):
 				InitialCheckPassed(u256(int(d.id))).emit()
 			else:
 				d.status = GRACE_PERIOD
-				d.grace_until = u256(now + GRACE_WINDOW)
+				# Set ONCE. Re-deriving it on every failed resubmission would
+				# let the influencer bounce GRACE -> submit -> GRACE forever,
+				# pushing the brand's timeout claim out indefinitely and
+				# locking the escrow for good.
+				if int(d.grace_until) == 0:
+					d.grace_until = u256(now + GRACE_WINDOW)
 				GracePeriodEntered(u256(int(d.id)), reason=reason[:200]).emit()
 
 	def _verify(self, d: Deal, final: bool) -> tuple[bool, str, str, bool]:
@@ -381,7 +526,9 @@ class HypeBond(gl.Contract):
 		def do_judge() -> str:
 			try:
 				page = gl.nondet.web.render(post_url, mode="text")
-				page_text = page[:MAX_PAGE_CHARS]
+				# Truncate first (bounds the work), then defang any prompt
+				# markers the post author planted in their own content.
+				page_text = self._neutralize_page(page[:MAX_PAGE_CHARS])
 				fetched = True
 			except Exception:
 				page_text = ""
@@ -457,8 +604,8 @@ Respond with STRICT JSON only — no prose, no markdown fences, exactly:
 			cleaned = raw.replace("```json", "").replace("```", "").strip()
 			try:
 				data = json.loads(cleaned)
-				exists = bool(data["exists"])
-				overall = bool(data["overall_pass"])
+				exists = _verdict_bool(data["exists"])
+				overall = _verdict_bool(data["overall_pass"])
 				reason = str(data.get("reason", ""))[:500]
 				checks_in = data.get("checks", [])
 				checks: list[dict[str, typing.Any]] = []
@@ -469,7 +616,7 @@ Respond with STRICT JSON only — no prose, no markdown fences, exactly:
 						checks.append(
 							{
 								"requirement": str(c.get("requirement", ""))[:120],
-								"passed": bool(c.get("passed", False)),
+								"passed": _verdict_bool(c.get("passed", False)),
 								"evidence": str(c.get("evidence", ""))[:80],
 							}
 						)
@@ -504,13 +651,26 @@ are equivalent only if both contain an "error" key."""
 			verdict = json.loads(result_raw)
 			if "error" in verdict:
 				return (False, "", "", False)
-			exists = bool(verdict["exists"])
-			overall = bool(verdict["overall_pass"])
+			exists = _verdict_bool(verdict["exists"])
+			overall = _verdict_bool(verdict["overall_pass"])
 			reason = str(verdict.get("reason", ""))[:500]
-			checks = verdict.get("checks", [])
-			if not isinstance(checks, list):
+			checks_in = verdict.get("checks", [])
+			if not isinstance(checks_in, list):
 				return (False, "", "", False)
-			passed = exists and overall
+			# Re-clamp before storing: the consensus payload is model-derived,
+			# so never let it dictate how much goes into contract storage.
+			checks: list[dict[str, typing.Any]] = []
+			for c in checks_in[:12]:
+				if not isinstance(c, dict):
+					continue
+				checks.append(
+					{
+						"requirement": str(c.get("requirement", ""))[:120],
+						"passed": _verdict_bool(c.get("passed", False)),
+						"evidence": str(c.get("evidence", ""))[:80],
+					}
+				)
+			passed = exists and overall and all(c["passed"] for c in checks)
 			checks_json = json.dumps(
 				{
 					"exists": exists,
@@ -580,6 +740,7 @@ are equivalent only if both contain an "error" key."""
 			"submitted_at": int(d.submitted_at),
 			"verify_after": int(d.verify_after),
 			"grace_until": int(d.grace_until),
+			"last_check_at": int(d.last_check_at),
 			"status": d.status,
 			"verdict_reason": d.verdict_reason,
 			"checks_passed": d.checks_passed,

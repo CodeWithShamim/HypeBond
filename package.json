@@ -9,6 +9,12 @@
     "build": "pnpm --filter @hypebond/shared build && pnpm --filter @hypebond/web build",
     "preview": "pnpm --filter @hypebond/web preview",
     "typecheck": "pnpm --filter @hypebond/web typecheck",
+    "test": "pnpm test:contract && pnpm test:web",
+    "test:contract": "python3 packages/contracts/tests/run.py",
+    "test:web": "pnpm --filter @hypebond/web test",
+    "test:watch": "pnpm --filter @hypebond/web test:watch",
+    "test:smoke": "node packages/contracts/scripts/smoke.mjs",
+    "verify": "pnpm typecheck && pnpm test && pnpm build",
     "deploy:contract": "node packages/contracts/scripts/deploy.mjs",
     "lint:genvm": "uvx --from genvm-linter genvm-lint check packages/contracts/hypebond.py"
   },

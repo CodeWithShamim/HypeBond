@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import { useBrandDeals, useInfluencerDeals } from "@/hooks/useHypebond";
 import { useWallet } from "@/lib/wallet";
+import { errorMessage } from "@/lib/format";
 import { CONTRACT_CONFIGURED } from "@/lib/genlayer";
 import { PageItem } from "@/components/motion/PageTransition";
 import { BondingLoader } from "@/components/motion/BondingLoader";
@@ -84,7 +85,7 @@ export function Dashboard() {
             <BondingLoader lines={["pulling your bonds…", "reading the chain…"]} />
           </div>
         ) : active.isError ? (
-          <ErrorStrip>Could not load deals: {String(active.error)}</ErrorStrip>
+          <ErrorStrip>Could not load deals: {errorMessage(active.error)}</ErrorStrip>
         ) : deals.length === 0 ? (
           <EmptyState
             title="No bonds yet"
