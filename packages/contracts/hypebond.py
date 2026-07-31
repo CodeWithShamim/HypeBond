@@ -290,6 +290,29 @@ def _redact_delimiter_runs(text: str) -> str:
 	return "".join(out)
 
 
+def _neutralize_page(text: str) -> str:
+	"""Defang prompt-structure markers in fetched page content.
+
+	The influencer controls the text of their own post, so the page body is
+	fully attacker-chosen. Without this, posting the literal string
+	"<<<END PAGE>>>" followed by instructions would end the untrusted
+	region and let the post dictate its own verdict.
+
+	Invisible characters are stripped FIRST so they cannot be used to
+	break a delimiter run apart (a zero-width space between each "<" of
+	"<<<END PAGE>>>") and slip it past the run scanner while the model
+	still reads it as a terminator.
+
+	MODULE LEVEL ON PURPOSE. This runs inside the nondet block, whose
+	closure GenVM pickles. As a method it would put `self` in that closure,
+	dragging the contract — and with it the storage manager — into the
+	pickle, which warns "Detected pickling storage class" and is not
+	readable in nondet mode. Nothing the nondet block touches may reach
+	storage.
+	"""
+	return _redact_delimiter_runs(_scrub_invisible(text))
+
+
 def _verdict_bool(value: typing.Any) -> bool:
 	"""Read a boolean out of model-produced JSON, failing closed.
 
@@ -405,21 +428,6 @@ class HypeBond(gl.Contract):
 		flat = " ".join(terms.lower().split())
 		if any(marker in flat for marker in PROMPT_MARKERS):
 			raise gl.vm.UserError("terms may not contain prompt delimiter markers")
-
-	def _neutralize_page(self, text: str) -> str:
-		"""Defang prompt-structure markers in fetched page content.
-
-		The influencer controls the text of their own post, so the page body is
-		fully attacker-chosen. Without this, posting the literal string
-		"<<<END PAGE>>>" followed by instructions would end the untrusted
-		region and let the post dictate its own verdict.
-
-		Invisible characters are stripped FIRST so they cannot be used to
-		break a delimiter run apart (a zero-width space between each "<" of
-		"<<<END PAGE>>>") and slip it past the run scanner while the model
-		still reads it as a terminator.
-		"""
-		return _redact_delimiter_runs(_scrub_invisible(text))
 
 	# ------------------------------------------------------------ writes
 
@@ -727,7 +735,7 @@ class HypeBond(gl.Contract):
 				# again afterwards: redaction replaces a 3-char run with a
 				# longer token, so a page of pure "<<<<<<..." would otherwise
 				# grow the prompt past the budget it was just clamped to.
-				page_text = self._neutralize_page(page[:MAX_PAGE_CHARS])[:MAX_PAGE_CHARS]
+				page_text = _neutralize_page(page[:MAX_PAGE_CHARS])[:MAX_PAGE_CHARS]
 				fetched = True
 			except Exception:
 				page_text = ""
