@@ -1,4 +1,9 @@
-import { motion, useReducedMotion, type Variants } from "framer-motion";
+import {
+  motion,
+  useIsPresent,
+  useReducedMotion,
+  type Variants,
+} from "framer-motion";
 import type { ReactNode } from "react";
 
 /** Card-level stagger item — use inside <PageFrame> for cards/sections. */
@@ -26,8 +31,8 @@ export function PageItem({
 }
 
 /**
- * Route transition frame. Wrap every page's content in this, inside an
- * AnimatePresence mode="wait" keyed by pathname (see App.tsx).
+ * Route transition frame. Wrap every page's content in this, inside the
+ * AnimatePresence keyed by pathname (see App.tsx).
  *
  * Exit: page scales to 0.98 + fades. Enter: a hype→pulse gradient wipe
  * sweeps left→right off-screen while content slides up 24px, staggering
@@ -35,6 +40,10 @@ export function PageItem({
  */
 export function PageFrame({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
+  // The presence is a plain (sync) one, so the outgoing and incoming pages
+  // overlap for the length of the exit. Taking the outgoing one out of flow
+  // keeps the incoming page at the top of <main> instead of pushed below it.
+  const isPresent = useIsPresent();
 
   if (reduced) {
     return <div>{children}</div>;
@@ -45,6 +54,11 @@ export function PageFrame({ children }: { children: ReactNode }) {
       initial="hidden"
       animate="show"
       exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.18 } }}
+      style={
+        isPresent
+          ? undefined
+          : { position: "absolute", top: 0, left: 0, right: 0 }
+      }
       variants={{
         hidden: {},
         show: { transition: { staggerChildren: 0.06, delayChildren: 0.12 } },

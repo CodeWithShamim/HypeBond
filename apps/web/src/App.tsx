@@ -24,8 +24,12 @@ const queryClient = new QueryClient({
 
 function AnimatedRoutes() {
   const location = useLocation();
+  // NOT mode="wait": in framer-motion 11 the entering child mounts stuck at its
+  // `initial` variant and never animates in, leaving every page rendered but
+  // invisible until a reload. PageFrame pulls the exiting page out of flow
+  // instead, so the crossover still doesn't stack two pages.
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence>
       <Routes location={location} key={location.pathname}>
         <Route
           path="/"

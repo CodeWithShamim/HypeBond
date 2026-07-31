@@ -83,8 +83,9 @@ export function Shell({ children }: { children: ReactNode }) {
         )}
       </AnimatePresence>
 
-      {/* 12-col content grid */}
-      <main className="mx-auto w-full max-w-6xl px-4 pb-28 pt-6 md:px-8 md:pb-16">
+      {/* 12-col content grid. `relative` anchors the outgoing page, which
+          PageFrame takes out of flow for the length of a route transition. */}
+      <main className="relative mx-auto w-full max-w-6xl px-4 pb-28 pt-6 md:px-8 md:pb-16">
         {children}
       </main>
 
