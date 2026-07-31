@@ -69,6 +69,25 @@ function useActiveSection(): string {
   return active;
 }
 
+/**
+ * Land on the right section for a deep link like /docs#security.
+ *
+ * The browser does its own hash scroll during initial HTML load — long
+ * before React has rendered a single section — so a shared link would
+ * otherwise dump the reader at the top of the page. Re-run it on mount.
+ */
+function useHashLanding(): void {
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (!id || !SECTION_IDS.includes(id as (typeof SECTION_IDS)[number])) return;
+    // One frame, so the route transition has laid the content out.
+    const frame = requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "auto" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+}
+
 function TableOfContents() {
   const active = useActiveSection();
   return (
@@ -153,6 +172,11 @@ function Diagram({ children, label }: { children: string; label?: string }) {
       >
         {children}
       </pre>
+      {/* Diagrams are wider than a phone. Say so, rather than letting the
+          right-hand half of a state machine go unnoticed. */}
+      <figcaption className="border-t-2 border-static px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-bone/30 md:hidden">
+        swipe the diagram sideways →
+      </figcaption>
     </figure>
   );
 }
@@ -395,6 +419,7 @@ const VERIFICATION = `submit_post / recheck_post / finalize
 // ---------------------------------------------------------------- page
 
 export function Docs() {
+  useHashLanding();
   return (
     <div className="space-y-12">
       {/* ---------- header ---------- */}
@@ -1435,6 +1460,26 @@ pnpm dev`}</CodeBlock>
           </PageItem>
 
           {/* ---------- CTA ---------- */}
+          <PageItem>
+            <section className="rounded-card border-2 border-static p-8 text-center md:p-12">
+              <h2 className="font-display text-3xl font-bold uppercase tracking-tight text-bone md:text-4xl">
+                That's the whole <span className="text-bond">machine</span>
+              </h2>
+              <p className="mx-auto mt-3 max-w-md text-bone/60">
+                Write the terms, lock the bag, let the post speak for itself.
+              </p>
+              <div className="mt-7 flex flex-wrap justify-center gap-3">
+                <Link to="/new">
+                  <Button className="!px-8 !py-4 text-base">Start a bond</Button>
+                </Link>
+                <Link to="/dashboard">
+                  <Button variant="ghost" className="!px-8 !py-4 text-base">
+                    View bonds
+                  </Button>
+                </Link>
+              </div>
+            </section>
+          </PageItem>
         </div>
 
         {/* ---------- desktop TOC ---------- */}

@@ -72,6 +72,19 @@ GRACE_WINDOW = 48 * 3600  # influencer window to fix a failed check
 STALE_WINDOW = 14 * SECONDS_PER_DAY
 RECHECK_COOLDOWN = 300  # min seconds between AI re-checks (anti-spam)
 
+# The influencer must publish PUBLICLY before they can submit the URL, so an
+# instant cancel would let the brand watch the post go live and reclaim the
+# escrow before `submit_post` lands — free advertising against a post that
+# cannot be un-published. A cancellation therefore only takes effect after a
+# public notice window, during which the influencer can still submit.
+CANCEL_NOTICE = 24 * 3600
+
+# A page that cannot be fetched is NOT proof of a deleted post: platforms
+# rate-limit and validators share egress addresses. Final verification must
+# see the post unreachable for this long before it treats it as gone and
+# moves the escrow.
+UNREACHABLE_CONFIRM = 3600
+
 MAX_PAGE_CHARS = 6000  # cap of fetched post text fed to the judge
 MAX_URL_CHARS = 500
 
@@ -158,6 +171,8 @@ class Deal:
 	verify_after: u256  # timestamp when final verification is allowed
 	grace_until: u256  # resubmission deadline — set ONCE, never extended
 	last_check_at: u256  # last AI check attempt, for the recheck cooldown
+	cancel_requested_at: u256  # brand's cancellation notice started (0 = none)
+	unreachable_since: u256  # first unfetchable FINAL check (0 = reachable)
 	status: str
 	verdict_reason: str  # AI-written explanation of pass/fail
 	checks_passed: str  # JSON string of per-criterion results
@@ -197,8 +212,20 @@ class DealRefunded(gl.Event):
 	def __init__(self, deal_id: u256, /, **blob): ...
 
 
+class CancelRequested(gl.Event):
+	"""Brand started the cancellation notice — the influencer can still submit."""
+
+	def __init__(self, deal_id: u256, /, **blob): ...
+
+
 class DealCancelled(gl.Event):
 	def __init__(self, deal_id: u256, /): ...
+
+
+class PostUnreachable(gl.Event):
+	"""Final check could not fetch the post — not settled, awaiting confirmation."""
+
+	def __init__(self, deal_id: u256, /, **blob): ...
 
 
 # ---------------------------------------------------------------- verdict parsing
