@@ -12,6 +12,7 @@ import { Landing } from "@/pages/Landing";
 import { NewDeal } from "@/pages/NewDeal";
 import { DealPage } from "@/pages/DealPage";
 import { Dashboard } from "@/pages/Dashboard";
+import { Docs } from "@/pages/Docs";
 import { NotFound } from "@/pages/NotFound";
 
 const queryClient = new QueryClient({
@@ -54,6 +55,14 @@ function AnimatedRoutes() {
           element={
             <PageFrame>
               <Dashboard />
+            </PageFrame>
+          }
+        />
+        <Route
+          path="/docs"
+          element={
+            <PageFrame>
+              <Docs />
             </PageFrame>
           }
         />

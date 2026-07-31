@@ -12,6 +12,7 @@ const NAV = [
   { to: "/", label: "Home", icon: "◆", end: true },
   { to: "/new", label: "New bond", icon: "＋", end: false },
   { to: "/dashboard", label: "Dashboard", icon: "▦", end: false },
+  { to: "/docs", label: "Docs", icon: "▤", end: false },
 ];
 
 function Wordmark() {
@@ -178,7 +179,7 @@ export function Shell({ children }: { children: ReactNode }) {
       </main>
 
       {/* bottom tab bar (mobile) */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t-2 border-static bg-void md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t-2 border-static bg-void md:hidden">
         {NAV.map((n) => (
           <NavLink
             key={n.to}
