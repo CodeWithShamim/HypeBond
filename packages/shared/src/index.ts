@@ -104,6 +104,23 @@ const PROMPT_MARKERS = [
 ];
 
 /**
+ * Every marker above is built from a run of one delimiter character. The
+ * contract rejects the RUNS rather than the literal markers, because a model
+ * reads "<<<END  PAGE>>>" and "<<< end page >>>" as the same terminator that
+ * "<<<END PAGE>>>" is. Must stay in lockstep with DELIM_RUN_CHARS /
+ * DELIM_RUN_MIN in hypebond.py.
+ */
+const DELIM_RUN_RE = /<{3,}|>{3,}|-{3,}/;
+
+/**
+ * Zero-width, bidi-control and separator code points the contract rejects in
+ * terms: invisible to a reader, real tokens to the judging model. Must stay
+ * in lockstep with INVISIBLE_CHARS in hypebond.py.
+ */
+const INVISIBLE_RE =
+  /[\u00ad\u061c\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u007f]/;
+
+/**
  * Mirror of the contract's `_check_terms_safe`. Returns an error string, or
  * null when the terms are acceptable.
  */
@@ -111,6 +128,10 @@ export function termsProblem(terms: string): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u0008\u000B-\u001F]/.test(terms))
     return "Terms contain unsupported control characters.";
+  if (INVISIBLE_RE.test(terms))
+    return "Terms contain invisible or bidirectional characters.";
+  if (DELIM_RUN_RE.test(terms))
+    return "Terms may not contain prompt delimiter markers (<<<, >>> or ---).";
   const flat = terms.toLowerCase().split(/\s+/).join(" ");
   if (PROMPT_MARKERS.some((m) => flat.includes(m)))
     return "Terms may not contain prompt delimiter markers.";
@@ -313,6 +334,22 @@ export const TERMS_MAX = 4000;
  * before the brand may reclaim. Mirrors STALE_WINDOW in hypebond.py.
  */
 export const STALE_WINDOW_DAYS = 14;
+
+/**
+ * Minimum seconds between AI checks. Mirrors RECHECK_COOLDOWN in
+ * hypebond.py, which applies it to BOTH `recheck_post` and `finalize` —
+ * each spends a live web fetch plus an LLM consensus round.
+ */
+export const RECHECK_COOLDOWN_SECONDS = 300;
+
+/**
+ * When the next AI check may run, or 0 if none has run yet. Used to disable
+ * retry buttons that the contract would reject anyway — a revert still costs
+ * the caller gas.
+ */
+export function checkCooldownUntil(d: Deal): number {
+  return d.last_check_at > 0 ? d.last_check_at + RECHECK_COOLDOWN_SECONDS : 0;
+}
 
 /** Deadline for the brand's no-submission timeout claim. */
 export function submitDeadline(d: Deal): number {

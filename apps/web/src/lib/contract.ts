@@ -24,6 +24,27 @@ async function read(functionName: string, args: unknown[]): Promise<unknown> {
   });
 }
 
+/**
+ * The contract caps a single page at 50 (`_page_deals`), and the per-user
+ * index is append-ordered — so a one-shot read of offset 0 returns a user's
+ * OLDEST 50 bonds and silently hides every newer one. Anything showing "your
+ * bonds" has to walk the pages.
+ */
+const PAGE = 50;
+const MAX_PAGES = 40; // 2000 deals for one user; a stop, not an expectation
+
+async function readAllPages(
+  page: (offset: number, limit: number) => Promise<Deal[]>
+): Promise<Deal[]> {
+  const out: Deal[] = [];
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const batch = await page(i * PAGE, PAGE);
+    out.push(...batch);
+    if (batch.length < PAGE) break; // short page = last page
+  }
+  return out;
+}
+
 export const reads = {
   deal: async (id: number): Promise<Deal | null> =>
     parseDeal(await read("get_deal", [id])),
@@ -35,6 +56,10 @@ export const reads = {
     limit = 50
   ): Promise<Deal[]> =>
     parseDealList(await read("get_influencer_deals", [addr, offset, limit])),
+  allBrandDeals: (addr: string): Promise<Deal[]> =>
+    readAllPages((offset, limit) => reads.brandDeals(addr, offset, limit)),
+  allInfluencerDeals: (addr: string): Promise<Deal[]> =>
+    readAllPages((offset, limit) => reads.influencerDeals(addr, offset, limit)),
   dealCount: async (): Promise<number> => {
     const v = await read("get_deal_count", []);
     return typeof v === "bigint" ? Number(v) : typeof v === "number" ? v : 0;
@@ -155,21 +180,41 @@ export const writes = {
 };
 
 /**
- * After create_deal: newest deal id for this brand (the one just minted).
+ * Highest deal id belonging to this brand.
  *
  * `offset` indexes the brand's OWN deal array, not the global deal list, so
  * it has to be walked from 0 — a global count would skip straight past a
  * brand with only a handful of deals and come back empty.
  */
-const PAGE = 50;
-const MAX_PAGES = 40; // 2000 deals for one brand; a stop, not an expectation
-
 export async function latestBrandDealId(addr: string): Promise<number | null> {
   let best: number | null = null;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const deals = await reads.brandDeals(addr, page * PAGE, PAGE);
-    for (const d of deals) if (best === null || d.id > best) best = d.id;
-    if (deals.length < PAGE) break; // short page = last page
+  for (const d of await reads.allBrandDeals(addr)) {
+    if (best === null || d.id > best) best = d.id;
   }
   return best;
+}
+
+/**
+ * Resolve the id that a just-accepted `create_deal` minted.
+ *
+ * `knownBefore` is the brand's highest id read *before* the write. Reads can
+ * lag the transaction they just confirmed, and the pre-existing maximum is a
+ * perfectly plausible-looking answer — it would hand the brand a link to one
+ * of their older bonds and let them share it as the new deal. So only an id
+ * that actually ADVANCED counts; short of that, poll briefly and then report
+ * "unknown" rather than guessing.
+ */
+export async function awaitNewBrandDealId(
+  addr: string,
+  knownBefore: number | null,
+  attempts = 5,
+  delayMs = 2000
+): Promise<number | null> {
+  for (let i = 0; i < attempts; i++) {
+    const latest = await latestBrandDealId(addr);
+    if (latest !== null && (knownBefore === null || latest > knownBefore))
+      return latest;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null;
 }

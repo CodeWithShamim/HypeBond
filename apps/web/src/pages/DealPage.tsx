@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
+  checkCooldownUntil,
   dealSerial,
   isValidPostUrl,
   PLATFORM_LABELS,
@@ -136,6 +137,14 @@ export function DealPage() {
   // Verification never resolved — the brand's last-resort reclaim.
   const staleAt = deal ? staleDeadline(deal) : null;
   const staleTimeoutReady = staleAt !== null && now / 1000 >= staleAt;
+  // Both AI retry paths share one on-chain cooldown. Offering a button the
+  // contract will reject just burns the caller's gas on a certain revert.
+  const cooldownUntil = deal ? checkCooldownUntil(deal) : 0;
+  const cooldown = useMemo(
+    () => countdownTo(cooldownUntil, now),
+    [cooldownUntil, now]
+  );
+  const checkCoolingDown = cooldownUntil > 0 && !cooldown.done;
 
   if (!CONTRACT_CONFIGURED) {
     return (
@@ -311,10 +320,12 @@ export function DealPage() {
                   <Button
                     variant="ghost"
                     loading={recheck.isPending}
-                    disabled={!wallet.address}
+                    disabled={!wallet.address || checkCoolingDown}
                     onClick={() => recheck.mutate({ dealId: deal.id })}
                   >
-                    Re-run check
+                    {checkCoolingDown
+                      ? `Re-run in ${countdownLabel(cooldown)}`
+                      : "Re-run check"}
                   </Button>
                 </div>
               )}
@@ -347,11 +358,21 @@ export function DealPage() {
                     />
                   ) : (
                     <Button
-                      disabled={!liveCountdown.done || !wallet.address}
+                      disabled={
+                        !liveCountdown.done || !wallet.address || checkCoolingDown
+                      }
                       onClick={() => finalize.mutate({ dealId: deal.id })}
                     >
-                      Finalize bond
+                      {liveCountdown.done && checkCoolingDown
+                        ? `Retry in ${countdownLabel(cooldown)}`
+                        : "Finalize bond"}
                     </Button>
+                  )}
+                  {liveCountdown.done && checkCoolingDown && (
+                    <p className="font-mono text-xs text-bone/40">
+                      A check just ran without reaching a verdict. Finalization
+                      stays open to anyone for 14 days — it never auto-passes.
+                    </p>
                   )}
                   {!wallet.address && (
                     <p className="font-mono text-xs text-bone/40">

@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { extractGenVmError } from "./contract";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { readContract } = vi.hoisted(() => ({ readContract: vi.fn() }));
+
+vi.mock("./genlayer", () => ({
+  CONTRACT_ADDRESS: `0x${"11".repeat(20)}` as `0x${string}`,
+  CONTRACT_CONFIGURED: true,
+  readClient: () => ({ readContract }),
+  genlayerClient: () => ({}),
+  ensureConsensus: async () => undefined,
+  ensureCorrectChain: async () => undefined,
+}));
+
+import {
+  awaitNewBrandDealId,
+  extractGenVmError,
+  latestBrandDealId,
+  reads,
+} from "./contract";
 
 /**
  * A rolled-back GenVM call still reaches ACCEPTED consensus, so the only
@@ -125,5 +142,106 @@ describe("extractGenVmError", () => {
       { result: resultBlob(1, "terms must be 50–4000 characters") },
     ]);
     expect(extractGenVmError(receipt)).toBe("terms must be 50–4000 characters");
+  });
+});
+
+// ---------------------------------------------------------------- paging
+
+const ADDR = `0x${"ab".repeat(20)}`;
+
+/** Minimal raw deal as the node returns it; only `id` matters here. */
+const rawDeal = (id: number) => ({
+  id,
+  brand: ADDR,
+  influencer: ADDR,
+  amount: 1n,
+  terms: "t",
+  post_url: "",
+  platform: "x",
+  min_live_days: 3,
+  created_at: 1,
+  submitted_at: 0,
+  verify_after: 0,
+  grace_until: 0,
+  last_check_at: 0,
+  status: "FUNDED",
+  verdict_reason: "",
+  checks_passed: "",
+  settled: false,
+});
+
+/** Serve `total` deals through the contract's 50-per-page view. */
+function serveDeals(total: number) {
+  readContract.mockImplementation(
+    ({ args }: { args: [string, number, number] }) => {
+      const [, offset, limit] = args;
+      const ids = Array.from({ length: total }, (_, i) => i + 1);
+      return Promise.resolve(
+        ids.slice(offset, offset + Math.min(limit, 50)).map(rawDeal)
+      );
+    }
+  );
+}
+
+describe("deal list paging", () => {
+  beforeEach(() => {
+    readContract.mockReset();
+  });
+
+  it("returns every page, not just the first 50", () => {
+    // The per-user index is append-ordered, so a single offset-0 read hands
+    // back the user's OLDEST 50 bonds and hides every newer one — the
+    // dashboard would stop showing new deals the moment a brand passed 50.
+    serveDeals(120);
+    return reads.allBrandDeals(ADDR).then((deals) => {
+      expect(deals).toHaveLength(120);
+      expect(deals.at(-1)?.id).toBe(120);
+    });
+  });
+
+  it("stops on a short page instead of paging forever", async () => {
+    serveDeals(70);
+    await reads.allBrandDeals(ADDR);
+    expect(readContract).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes exactly one call when the user has no deals", async () => {
+    serveDeals(0);
+    expect(await reads.allInfluencerDeals(ADDR)).toEqual([]);
+    expect(readContract).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds the highest id past the first page", async () => {
+    serveDeals(60);
+    expect(await latestBrandDealId(ADDR)).toBe(60);
+  });
+});
+
+describe("awaitNewBrandDealId", () => {
+  beforeEach(() => {
+    readContract.mockReset();
+  });
+
+  it("returns the id only once it has advanced past the snapshot", async () => {
+    let total = 3; // read still lagging the accepted write
+    readContract.mockImplementation(() => {
+      const deals = Array.from({ length: total }, (_, i) => rawDeal(i + 1));
+      total = 4; // the next poll sees the new deal
+      return Promise.resolve(deals);
+    });
+    expect(await awaitNewBrandDealId(ADDR, 3, 5, 0)).toBe(4);
+  });
+
+  it("reports unknown rather than handing back a pre-existing deal", async () => {
+    // A lagging read returns the brand's previous maximum, which is a
+    // perfectly plausible id — returning it would send them to an older bond
+    // and let them share that link as the new deal.
+    serveDeals(3);
+    expect(await awaitNewBrandDealId(ADDR, 3, 3, 0)).toBeNull();
+  });
+
+  it("accepts the first id when the brand had none before", async () => {
+    serveDeals(1);
+    expect(await awaitNewBrandDealId(ADDR, null, 3, 0)).toBe(1);
   });
 });

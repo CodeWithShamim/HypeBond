@@ -24,7 +24,9 @@ SECURITY INVARIANTS
 - Checks-effects-interactions: `settled = True` and the terminal status are
   set BEFORE any transfer. Every money-moving method reverts if `settled`.
 - Verification FAILS CLOSED: unusable AI output leaves status unchanged and
-  emits VerificationErrored — it never pays out and never refunds.
+  emits VerificationErrored — it never pays out and never refunds. A payout
+  additionally requires a NON-EMPTY check list, so a verdict that verified
+  nothing can never release the escrow.
 - NO STATE LOCKS THE ESCROW FOREVER. Every non-terminal status has a brand
   timeout claim, and `grace_until` is set once so a failing influencer cannot
   extend it by resubmitting. Retry paths (`recheck_post`, `finalize`) stay
@@ -32,7 +34,13 @@ SECURITY INVARIANTS
 - Every untrusted string reaching the judging prompt is constrained: the post
   URL to a strict character allowlist, the fetched page to marker-neutralized
   text, and the deal terms to marker-free content. Neither party can close
-  its delimited region and rewrite the judge's task.
+  its delimited region and rewrite the judge's task. Neutralization targets
+  the DELIMITER RUNS ("<<<", ">>>", "---") the markers are built from rather
+  than the literal markers, so respaced and repadded variants die with them,
+  and invisible/bidi characters are stripped so a run cannot be hidden from
+  the scanner while the model still reads it.
+- Both anyone-can-call retry paths (`recheck_post`, `finalize`) share one
+  cooldown: each spends a live web fetch plus an LLM consensus round.
 - No unbounded loops in public methods: per-user index arrays + paged views.
 - All timestamps come from the block context, never from user input.
 """
@@ -89,6 +97,37 @@ PROMPT_MARKERS = (
 	"<<<end page>>>",
 	"--- begin deal terms ---",
 	"--- end deal terms ---",
+)
+
+# Every marker above is built out of a RUN of one delimiter character: "<<<",
+# ">>>" or "---". Matching the markers literally is not enough, because a
+# language model reads "<<<END  PAGE>>>", "<<< end page >>>" and
+# "---  END DEAL TERMS  ---" as the same terminator that "<<<END PAGE>>>" is.
+# Redacting the runs themselves kills every spacing and casing variant at
+# once, and cannot be spelled around. A run of three is required so ordinary
+# prose ("a < b", "co-founder", "well--maybe") survives intact.
+DELIM_RUN_CHARS = frozenset("<>-")
+DELIM_RUN_MIN = 3
+DELIM_REDACTION = "[redacted]"
+
+# Zero-width, bidi-control and separator code points. They render as nothing
+# (or silently reorder text) for a human, but remain real tokens to the
+# judging model — which makes them the standard way to hide instructions in
+# otherwise innocent text, and to split a delimiter run past a scanner that
+# only looks at visible characters. Stripped from fetched pages, rejected in
+# deal terms. Written as escapes on purpose — spelling these literally
+# would make the list itself invisible to a reviewer.
+INVISIBLE_CHARS = frozenset(
+	"\u00ad"  # soft hyphen
+	"\u061c"  # arabic letter mark
+	"\u180e"  # mongolian vowel separator
+	"\u200b\u200c\u200d\u200e\u200f"  # zero-width space/NJ/J, LRM, RLM
+	"\u2028\u2029"  # line / paragraph separator
+	"\u202a\u202b\u202c\u202d\u202e"  # bidi embedding + override
+	"\u2060\u2061\u2062\u2063\u2064"  # word joiner + invisible operators
+	"\u2066\u2067\u2068\u2069"  # bidi isolates
+	"\ufeff"  # BOM / zero-width no-break space
+	"\x7f"  # DEL
 )
 
 # Must stay in lockstep with PLATFORM_DOMAINS in packages/shared.
@@ -165,6 +204,46 @@ class DealCancelled(gl.Event):
 # ---------------------------------------------------------------- verdict parsing
 
 
+def _scrub_invisible(text: str) -> str:
+	"""Drop zero-width / bidi / separator code points.
+
+	These are invisible to a human reading the post but are real tokens to
+	the judging model, so they are both a way to hide instructions in
+	innocent-looking text and a way to split a delimiter run past a scanner
+	that only inspects visible characters.
+	"""
+	return "".join(ch for ch in text if ch not in INVISIBLE_CHARS)
+
+
+def _redact_delimiter_runs(text: str) -> str:
+	"""Replace every run of 3+ identical delimiter characters with a marker.
+
+	This is what actually stops delimiter forgery. Literal marker matching
+	is defeated by respacing ("<<<END  PAGE>>>") or padding
+	("<<< end page >>>"), and the model reads all of those as the region
+	terminator. Redacting the runs removes the only building block those
+	variants share, so there is nothing left to spell around.
+
+	Runs must be of a SINGLE repeated character, so ordinary prose ("a < b",
+	"co-founder", "well--maybe") passes through untouched.
+	"""
+	out: list[str] = []
+	i = 0
+	n = len(text)
+	while i < n:
+		ch = text[i]
+		if ch in DELIM_RUN_CHARS:
+			j = i
+			while j < n and text[j] == ch:
+				j += 1
+			out.append(DELIM_REDACTION if j - i >= DELIM_RUN_MIN else text[i:j])
+			i = j
+		else:
+			out.append(ch)
+			i += 1
+	return "".join(out)
+
+
 def _verdict_bool(value: typing.Any) -> bool:
 	"""Read a boolean out of model-produced JSON, failing closed.
 
@@ -212,6 +291,22 @@ class HypeBond(gl.Contract):
 		if d.settled:
 			raise gl.vm.UserError("deal already settled")
 
+	def _require_check_cooldown(self, d: Deal) -> None:
+		"""Throttle the anyone-can-call AI retry paths.
+
+		Every check spends validator work (a live web fetch plus an LLM
+		consensus round), so both retry entry points share one cooldown.
+		"""
+		if self._now() < int(d.last_check_at) + RECHECK_COOLDOWN:
+			raise gl.vm.UserError("a check ran recently — wait before retrying")
+
+	def _addr_or_revert(self, addr: str) -> Address:
+		"""Parse a client-supplied address into a clean revert, not a crash."""
+		try:
+			return Address(addr)
+		except Exception:
+			raise gl.vm.UserError("invalid address")
+
 	def _check_post_url(self, url: str, platform: str) -> None:
 		"""URL must be https, made only of safe URL characters, and served
 		from one of the platform's domains.
@@ -253,6 +348,13 @@ class HypeBond(gl.Contract):
 		"""
 		if any(ord(ch) < 32 and ch not in "\n\t" for ch in terms):
 			raise gl.vm.UserError("terms contain unsupported control characters")
+		if any(ch in INVISIBLE_CHARS for ch in terms):
+			raise gl.vm.UserError("terms contain invisible or bidirectional characters")
+		# Reject the delimiter runs every marker is built from. This subsumes
+		# the literal markers below in every spacing and casing variant; the
+		# literal check is kept as a second, explicit layer.
+		if _redact_delimiter_runs(terms) != terms:
+			raise gl.vm.UserError("terms may not contain prompt delimiter markers")
 		# Collapse whitespace so spacing variants of a marker are still caught.
 		flat = " ".join(terms.lower().split())
 		if any(marker in flat for marker in PROMPT_MARKERS):
@@ -266,28 +368,12 @@ class HypeBond(gl.Contract):
 		"<<<END PAGE>>>" followed by instructions would end the untrusted
 		region and let the post dictate its own verdict.
 
-		Matching is case-insensitive via an ASCII-only fold. str.lower() is
-		NOT safe here: it can change a string's length (e.g. "İ" lowers to two
-		code points), which would desync the offsets used to splice `text`.
+		Invisible characters are stripped FIRST so they cannot be used to
+		break a delimiter run apart (a zero-width space between each "<" of
+		"<<<END PAGE>>>") and slip it past the run scanner while the model
+		still reads it as a terminator.
 		"""
-
-		def fold(s: str) -> str:
-			# Length-preserving by construction — one char in, one char out.
-			return "".join(
-				chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s
-			)
-
-		out = text
-		folded = fold(out)
-		for marker in PROMPT_MARKERS:  # already lowercase ASCII
-			i = folded.find(marker)
-			while i != -1:
-				out = out[:i] + "[redacted-marker]" + out[i + len(marker) :]
-				folded = fold(out)
-				# Resume past the replacement; it contains no marker, so this
-				# always terminates.
-				i = folded.find(marker, i + len("[redacted-marker]"))
-		return out
+		return _redact_delimiter_runs(_scrub_invisible(text))
 
 	# ------------------------------------------------------------ writes
 
@@ -371,6 +457,12 @@ class HypeBond(gl.Contract):
 		d.submitted_at = u256(now)
 		d.verify_after = u256(now + int(d.min_live_days) * SECONDS_PER_DAY)
 		d.status = SUBMITTED
+		# Clear the previous attempt's verdict. Otherwise a resubmission shows
+		# the OLD failure reason and checklist while the new check is still
+		# running — the influencer appears to have failed a check that has not
+		# been run against the new post yet.
+		d.verdict_reason = ""
+		d.checks_passed = ""
 		PostSubmitted(u256(int(deal_id))).emit()
 
 		self._run_check(d, final=False)
@@ -386,8 +478,7 @@ class HypeBond(gl.Contract):
 		self._require_unsettled(d)
 		if d.status != SUBMITTED:
 			raise gl.vm.UserError("deal has no pending initial check")
-		if self._now() < int(d.last_check_at) + RECHECK_COOLDOWN:
-			raise gl.vm.UserError("a check ran recently — wait before retrying")
+		self._require_check_cooldown(d)
 		self._run_check(d, final=False)
 
 	@gl.public.write
@@ -403,6 +494,14 @@ class HypeBond(gl.Contract):
 			raise gl.vm.UserError("deal is not awaiting final verification")
 		if self._now() < int(d.verify_after):
 			raise gl.vm.UserError("live window has not ended yet")
+		# Rate limited for the same reason `recheck_post` is: this is an
+		# anyone-can-call method that spends a full web-render + LLM consensus
+		# round per invocation. A verdict that keeps erroring leaves the deal
+		# in VERIFYING, where an unmetered finalize could be hammered every
+		# block. The cooldown cannot strand the escrow — it is 5 minutes
+		# against a STALE_WINDOW of 14 days, and a call that DOES reach a
+		# verdict settles the deal outright.
+		self._require_check_cooldown(d)
 		self._run_check(d, final=True)
 
 	@gl.public.write
@@ -527,8 +626,11 @@ class HypeBond(gl.Contract):
 			try:
 				page = gl.nondet.web.render(post_url, mode="text")
 				# Truncate first (bounds the work), then defang any prompt
-				# markers the post author planted in their own content.
-				page_text = self._neutralize_page(page[:MAX_PAGE_CHARS])
+				# markers the post author planted in their own content. Cap
+				# again afterwards: redaction replaces a 3-char run with a
+				# longer token, so a page of pure "<<<<<<..." would otherwise
+				# grow the prompt past the budget it was just clamped to.
+				page_text = self._neutralize_page(page[:MAX_PAGE_CHARS])[:MAX_PAGE_CHARS]
 				fetched = True
 			except Exception:
 				page_text = ""
@@ -626,7 +728,14 @@ Respond with STRICT JSON only — no prose, no markdown fences, exactly:
 				return json.dumps({"error": "unparseable verdict"})
 			# Conservative aggregation: never let overall_pass be true unless
 			# the post exists and every individual check passed.
-			overall = exists and overall and all(c["passed"] for c in checks)
+			#
+			# `checks` must be NON-EMPTY. `all([])` is True, so without this a
+			# verdict of {"exists": true, "checks": [], "overall_pass": true}
+			# releases the whole escrow having verified nothing at all — the
+			# exact shape an injected page asks the model to emit, and one the
+			# equivalence principle cannot catch (two empty check lists agree
+			# trivially). No checks means no evidence, which fails closed.
+			overall = exists and overall and bool(checks) and all(c["passed"] for c in checks)
 			return json.dumps(
 				{
 					"exists": exists,
@@ -670,7 +779,10 @@ are equivalent only if both contain an "error" key."""
 						"evidence": str(c.get("evidence", ""))[:80],
 					}
 				)
-			passed = exists and overall and all(c["passed"] for c in checks)
+			# Same non-empty requirement as do_judge — this is the aggregation
+			# that actually gates the transfer, so it re-derives the verdict
+			# rather than trusting the consensus payload's overall_pass.
+			passed = exists and overall and bool(checks) and all(c["passed"] for c in checks)
 			checks_json = json.dumps(
 				{
 					"exists": exists,
@@ -697,13 +809,17 @@ are equivalent only if both contain an "error" key."""
 	def get_brand_deals(
 		self, addr: str, offset: u256, limit: u256
 	) -> list[typing.Any]:
-		return self._page_deals(self.brand_deals.get(Address(addr)), offset, limit)
+		return self._page_deals(
+			self.brand_deals.get(self._addr_or_revert(addr)), offset, limit
+		)
 
 	@gl.public.view
 	def get_influencer_deals(
 		self, addr: str, offset: u256, limit: u256
 	) -> list[typing.Any]:
-		return self._page_deals(self.influencer_deals.get(Address(addr)), offset, limit)
+		return self._page_deals(
+			self.influencer_deals.get(self._addr_or_revert(addr)), offset, limit
+		)
 
 	@gl.public.view
 	def get_deal_count(self) -> u256:

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LIVE_STATUSES, type Deal, type Platform } from "@hypebond/shared";
 import {
+  awaitNewBrandDealId,
   latestBrandDealId,
   reads,
   writes,
@@ -27,11 +28,14 @@ export function useDeal(id: number | null) {
   });
 }
 
+// The contract pages at 50 and its per-user index is append-ordered, so a
+// single offset-0 read returns the user's OLDEST 50 bonds and hides newer
+// ones entirely. Both dashboard lists walk every page.
 export function useBrandDeals(addr: string | null) {
   return useQuery({
     queryKey: ["brandDeals", addr],
     enabled: CONTRACT_CONFIGURED && !!addr,
-    queryFn: () => reads.brandDeals(addr as string, 0, 50),
+    queryFn: () => reads.allBrandDeals(addr as string),
     refetchInterval: 30_000,
   });
 }
@@ -40,7 +44,7 @@ export function useInfluencerDeals(addr: string | null) {
   return useQuery({
     queryKey: ["influencerDeals", addr],
     enabled: CONTRACT_CONFIGURED && !!addr,
-    queryFn: () => reads.influencerDeals(addr as string, 0, 50),
+    queryFn: () => reads.allInfluencerDeals(addr as string),
     refetchInterval: 30_000,
   });
 }
@@ -97,6 +101,10 @@ export function useCreateDeal() {
   return useChainMutation<CreateDealArgs, number | null>(
     "Bond created",
     async (w, a) => {
+      // Snapshot first: reads can lag the write, and without a "before" to
+      // compare against, a lagging read returns one of the brand's OLDER
+      // bonds — indistinguishable from the new one, and shareable as it.
+      const before = await latestBrandDealId(address as string);
       await writes.createDeal(
         w,
         a.influencer,
@@ -105,7 +113,7 @@ export function useCreateDeal() {
         a.minLiveDays,
         a.escrow
       );
-      return latestBrandDealId(address as string);
+      return awaitNewBrandDealId(address as string, before);
     }
   );
 }
