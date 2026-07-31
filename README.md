@@ -67,7 +67,35 @@ pnpm test            # contract + frontend suites
 pnpm test:contract   # contract only  (python3, stdlib — no install needed)
 pnpm test:web        # frontend only  (vitest)
 pnpm test:watch      # vitest in watch mode
+pnpm lint:genvm      # contract lint + validation via genvm-linter
+pnpm test:smoke      # against a DEPLOYED contract
+node packages/contracts/scripts/verify-fixes.mjs   # security fixes, on-chain
 ```
+
+### Last full run
+
+All eight gates green on **2026-08-01** against
+`0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85` (studionet):
+
+| Gate | Result |
+| --- | --- |
+| `pnpm lint:genvm` | passed — 10 methods, 4 view / 6 write |
+| `pnpm test:contract` | 124 passed |
+| `pnpm typecheck` | clean |
+| `pnpm test:web` | 157 passed, 13 files |
+| `pnpm build` | clean |
+| `pnpm verify` | exit 0 |
+| `pnpm test:smoke` (deployed) | 26 passed, 0 failed |
+| `verify-fixes.mjs` (deployed) | 15 passed, 0 failed |
+
+The last two run against the **deployed** contract rather than the stub. That
+distinction matters: the stub is a test double, so passing there does not prove
+the real GenVM accepts the same inputs. `verify-fixes.mjs` exercises the
+security fixes specifically — delimiter-run forgeries, invisible/bidi
+characters, and that honest terms are still accepted.
+
+This table is a snapshot, not a live readout. The contract count is
+drift-guarded by the Python suite, so it cannot silently go stale.
 
 **Contract** (`packages/contracts/tests/`) — runs `hypebond.py` in plain
 CPython against a stub of the GenVM runtime (`tests/stubs/genlayer.py`), so

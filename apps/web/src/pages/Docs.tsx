@@ -116,6 +116,29 @@ function TableOfContents() {
   );
 }
 
+/**
+ * Last full verification run. A snapshot, not a live readout — re-run the
+ * commands above to reproduce it. The contract count is drift-guarded by the
+ * Python suite (`test_documented_test_count_matches_reality`), so it cannot
+ * silently go stale.
+ */
+const LAST_RUN = {
+  date: '2026-08-01',
+  deployed: '0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85',
+  contractTests: 124,
+  webTests: 157,
+  gates: [
+    ['pnpm lint:genvm', 'passed — 10 methods, 4 view / 6 write'],
+    ['pnpm test:contract', '124 passed'],
+    ['pnpm typecheck', 'clean'],
+    ['pnpm test:web', '157 passed, 13 files'],
+    ['pnpm build', 'clean'],
+    ['pnpm verify', 'exit 0'],
+    ['pnpm test:smoke (deployed)', '26 passed, 0 failed'],
+    ['verify-fixes.mjs (deployed)', '15 passed, 0 failed'],
+  ] as const,
+};
+
 // ---------------------------------------------------------------- primitives
 
 function Section({
@@ -1368,6 +1391,25 @@ pnpm dev`}</CodeBlock>
                   [<C key="f">pnpm lint:genvm</C>, 'Contract lint/validation via genvm-linter.'],
                 ]}
               />
+
+              <H3>Last full run</H3>
+              <P>
+                Every gate below passed on {LAST_RUN.date} against{' '}
+                <C>{LAST_RUN.deployed}</C>. The last two run against the deployed
+                contract rather than the stub — the stub is a test double, so passing there
+                does not prove the real GenVM accepts the same inputs.
+              </P>
+              <Table
+                head={['Gate', 'Result']}
+                rows={LAST_RUN.gates.map(([gate, result]) => [
+                  <C key={gate}>{gate}</C>,
+                  result,
+                ])}
+              />
+              <Note tone="good" title="Reproduce it">
+                <C>pnpm verify</C> covers gates 2–6 offline and is the one to run before you
+                push. The two on-chain gates need a Studio address in <C>.env</C>.
+              </Note>
 
               <H3>What the stub gives you</H3>
               <P>

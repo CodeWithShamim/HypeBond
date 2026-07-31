@@ -1381,6 +1381,38 @@ class TestViews(ChainTest):
 		}
 		self.assertEqual(ts_statuses, py_statuses)
 
+	def test_documented_test_count_matches_reality(self):
+		"""README and the in-app docs both publish this suite's size.
+
+		A stated number that quietly drifts is the same class of problem as
+		stale prose: it is a claim the repo makes about itself. Cheap to pin,
+		so pin it.
+		"""
+		import sys
+
+		total = unittest.defaultTestLoader.loadTestsFromModule(
+			sys.modules[__name__]
+		).countTestCases()
+
+		root = CONTRACT_DIR.parents[1]
+		readme = (root / "README.md").read_text(encoding="utf8")
+		docs = (root / "apps" / "web" / "src" / "pages" / "Docs.tsx").read_text(
+			encoding="utf8"
+		)
+
+		readme_claim = readme.split("`pnpm test:contract` |", 1)[1].split("passed", 1)[0]
+		self.assertEqual(
+			int(readme_claim.strip()),
+			total,
+			"README.md publishes a stale contract-test count",
+		)
+		docs_claim = docs.split("contractTests:", 1)[1].split(",", 1)[0]
+		self.assertEqual(
+			int(docs_claim.strip()),
+			total,
+			"Docs.tsx publishes a stale contract-test count",
+		)
+
 	def test_min_escrow_matches_the_shared_mirror(self):
 		"""A UI floor lower than the contract's just moves the rejection
 		on-chain, where it costs the brand gas to discover."""
