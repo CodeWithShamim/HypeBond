@@ -330,6 +330,16 @@ export const SUBMIT_WINDOW_DAYS = 14;
 /** Influencer's window to fix a failed initial check. */
 export const GRACE_HOURS = 48;
 
+/**
+ * Anti-spam floor on the escrow, in wei. Mirrors MIN_ESCROW in hypebond.py.
+ *
+ * `create_deal` appends to the INFLUENCER's index and anyone can name anyone,
+ * so without a floor a stranger's dashboard can be buried in dust deals. The
+ * escrow is refundable, so this is a capital requirement rather than a fee.
+ */
+export const MIN_ESCROW_WEI = 10n ** 16n; // 0.01 GEN
+export const MIN_ESCROW_LABEL = "0.01";
+
 export const TERMS_MIN = 50;
 export const TERMS_MAX = 4000;
 

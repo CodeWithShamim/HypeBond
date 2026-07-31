@@ -12,6 +12,7 @@ from pathlib import Path
 
 from harness import (
 	BRAND,
+	GEN,
 	INFLUENCER,
 	POST_URL,
 	STRANGER,
@@ -159,11 +160,11 @@ class TestPostUrlValidation(ChainTest):
 
 class TestCreateDeal(ChainTest):
 	def test_happy_path_records_full_state(self):
-		deal_id = self.c.create_deal(escrow=5_000)
+		deal_id = self.c.create_deal(escrow=5 * GEN)
 		self.assertEqual(deal_id, 1)
 		d = self.c.deal(deal_id)
 		self.assertEqual(d["status"], "FUNDED")
-		self.assertEqual(d["amount"], 5_000)
+		self.assertEqual(d["amount"], 5 * GEN)
 		self.assertEqual(d["brand"], BRAND.as_hex)
 		self.assertEqual(d["influencer"], INFLUENCER.as_hex)
 		self.assertEqual(d["platform"], "x")
@@ -171,7 +172,7 @@ class TestCreateDeal(ChainTest):
 		self.assertEqual(d["post_url"], "")
 		self.assertFalse(d["settled"])
 		self.assertEqual(d["created_at"], self.c.host.now)
-		self.assertEqual(self.c.host.contract_balance, 5_000)
+		self.assertEqual(self.c.host.contract_balance, 5 * GEN)
 
 	def test_ids_are_sequential_and_count_tracks_them(self):
 		self.assertEqual(int(self.c.view("get_deal_count")), 0)
@@ -193,6 +194,17 @@ class TestCreateDeal(ChainTest):
 	def test_rejects_zero_escrow(self):
 		with self.assertReverts("escrow amount must be positive"):
 			self.c.create_deal(escrow=0)
+
+	def test_rejects_dust_escrow(self):
+		"""`create_deal` writes into the INFLUENCER's index and anyone can name
+		anyone, so dust deals are a way to bury a stranger's dashboard."""
+		for amount in (1, 1_000, hypebond.MIN_ESCROW - 1):
+			with self.subTest(amount=amount):
+				with self.assertReverts("at least"):
+					self.c.create_deal(escrow=amount)
+
+	def test_accepts_exactly_the_minimum(self):
+		self.assertGreater(self.c.create_deal(escrow=hypebond.MIN_ESCROW), 0)
 
 	def test_rejects_self_deal(self):
 		with self.assertReverts("influencer must differ"):
@@ -216,7 +228,7 @@ class TestCreateDeal(ChainTest):
 
 	def test_rejects_invalid_influencer_address(self):
 		with self.assertReverts("invalid influencer address"):
-			self.c.call("create_deal", "not-an-address", TERMS, "x", 3, value=1_000)
+			self.c.call("create_deal", "not-an-address", TERMS, "x", 3, value=GEN)
 
 	def test_rejects_zero_address_influencer(self):
 		"""Escrow bonded to 0x0 could never be claimed — it is burned."""
@@ -416,7 +428,7 @@ class TestFailsClosed(ChainTest):
 		self.assertEqual(d["status"], "VERIFYING")
 		self.assertFalse(d["settled"])
 		self.assertEqual(self.c.host.transfers, [])
-		self.assertEqual(self.c.host.contract_balance, 1_000)
+		self.assertEqual(self.c.host.contract_balance, GEN)
 
 	def test_markdown_fenced_verdict_is_still_parsed(self):
 		self.c.program_page("Loving @hypebond #ad", POST_URL)
@@ -489,7 +501,7 @@ class TestVerdictAggregation(ChainTest):
 
 	def test_string_negative_exists_never_pays_out(self):
 		c = Chain()
-		deal_id = c.create_deal(escrow=1_000)
+		deal_id = c.create_deal(escrow=GEN)
 		c.submit_passing_post(deal_id)
 		c.warp_days(3.1)
 		c.program_page("deleted", POST_URL)
@@ -668,7 +680,7 @@ class TestPromptInjectionDefense(ChainTest):
 class TestFinalize(ChainTest):
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_000)
+		self.deal_id = self.c.create_deal(escrow=GEN)
 		self.c.submit_passing_post(self.deal_id)
 
 	def test_rejected_before_the_live_window_ends(self):
@@ -688,7 +700,7 @@ class TestFinalize(ChainTest):
 		d = self.c.deal(self.deal_id)
 		self.assertEqual(d["status"], "PAID")
 		self.assertTrue(d["settled"])
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
 		self.assertEqual(self.c.host.contract_balance, 0)
 		self.assertEqual(len(self.c.events_named("DealPaid")), 1)
 
@@ -734,7 +746,7 @@ class TestFinalize(ChainTest):
 		self.c.call("finalize", self.deal_id, sender=STRANGER)
 		with self.assertReverts("already settled"):
 			self.c.call("finalize", self.deal_id, sender=STRANGER)
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000, "no double payout")
+		self.assertEqual(self.c.balance(INFLUENCER), GEN, "no double payout")
 
 	def test_settled_deal_rejects_every_money_path(self):
 		self.c.warp_days(3.1)
@@ -750,7 +762,7 @@ class TestFinalize(ChainTest):
 				with self.assertRaises(Revert):
 					self.c.call(method, self.deal_id, sender=sender)
 		self.assertEqual(self.c.host.contract_balance, before)
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
 
 
 # ---------------------------------------------------------------- cancel
@@ -759,7 +771,7 @@ class TestFinalize(ChainTest):
 class TestCancel(ChainTest):
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=2_000)
+		self.deal_id = self.c.create_deal(escrow=2 * GEN)
 
 	def test_brand_gets_a_full_refund(self):
 		self.c.cancel_deal(self.deal_id)
@@ -794,7 +806,7 @@ class TestCancel(ChainTest):
 class TestClaimTimeout(ChainTest):
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_500)
+		self.deal_id = self.c.create_deal(escrow=3 * GEN // 2)
 
 	def test_rejected_before_the_submit_window_lapses(self):
 		self.c.warp_days(13.9)
@@ -867,30 +879,31 @@ class TestClaimTimeout(ChainTest):
 
 class TestEscrowAccounting(ChainTest):
 	def test_deals_do_not_share_escrow(self):
-		a = self.c.create_deal(escrow=1_000)
-		b = self.c.create_deal(escrow=2_000, influencer=addr(0x22))
-		self.assertEqual(self.c.host.contract_balance, 3_000)
+		a = self.c.create_deal(escrow=GEN)
+		b = self.c.create_deal(escrow=2 * GEN, influencer=addr(0x22))
+		self.assertEqual(self.c.host.contract_balance, 3 * GEN)
 		self.c.cancel_deal(a)
-		self.assertEqual(self.c.host.contract_balance, 2_000)
-		self.assertEqual(self.c.deal(b)["amount"], 2_000)
+		self.assertEqual(self.c.host.contract_balance, 2 * GEN)
+		self.assertEqual(self.c.deal(b)["amount"], 2 * GEN)
 		self.assertEqual(self.c.status(b), "FUNDED")
 
 	def test_payout_never_exceeds_the_deal_escrow(self):
-		deal_id = self.c.create_deal(escrow=1_000)
-		self.c.create_deal(escrow=9_000, influencer=addr(0x22))
+		deal_id = self.c.create_deal(escrow=GEN)
+		self.c.create_deal(escrow=9 * GEN, influencer=addr(0x22))
 		self.c.submit_passing_post(deal_id)
 		self.c.warp_days(3.1)
 		self.c.program_verdict(overall=True)
 		self.c.call("finalize", deal_id, sender=STRANGER)
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
-		self.assertEqual(self.c.host.contract_balance, 9_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
+		self.assertEqual(self.c.host.contract_balance, 9 * GEN)
 
 	def test_every_terminal_path_conserves_value(self):
 		paths = ["cancel", "timeout", "paid", "failed"]
 		for path in paths:
 			with self.subTest(path=path):
 				c = Chain()
-				deal_id = c.create_deal(escrow=777)
+				escrow = 777 * GEN // 1_000  # a deliberately un-round amount
+				deal_id = c.create_deal(escrow=escrow)
 				if path == "cancel":
 					c.cancel_deal(deal_id)
 				elif path == "timeout":
@@ -904,7 +917,7 @@ class TestEscrowAccounting(ChainTest):
 						c.program_page("deleted", POST_URL)
 					c.call("finalize", deal_id, sender=STRANGER)
 				self.assertEqual(c.host.contract_balance, 0)
-				self.assertEqual(sum(t.amount for t in c.host.transfers), 777)
+				self.assertEqual(sum(t.amount for t in c.host.transfers), escrow)
 
 
 # ---------------------------------------------------------------- empty checks
@@ -922,7 +935,7 @@ class TestEmptyCheckListNeverPays(ChainTest):
 
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_000)
+		self.deal_id = self.c.create_deal(escrow=GEN)
 		self.c.program_page("Loving the new drop from @hypebond #ad", POST_URL)
 
 	def test_initial_check_with_no_checks_does_not_advance(self):
@@ -970,7 +983,7 @@ class TestEmptyCheckListNeverPays(ChainTest):
 		self.c.program_verdict(exists=True, overall=True)
 		self.c.call("finalize", self.deal_id, sender=STRANGER)
 		self.assertEqual(self.c.status(self.deal_id), "PAID")
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
 
 
 # ---------------------------------------------------------------- delimiter runs
@@ -1079,7 +1092,7 @@ class TestCheckCooldown(ChainTest):
 
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_000)
+		self.deal_id = self.c.create_deal(escrow=GEN)
 		self.c.submit_passing_post(self.deal_id)
 		self.c.warp_days(3.1)
 
@@ -1099,7 +1112,7 @@ class TestCheckCooldown(ChainTest):
 		self.c.program_verdict(overall=True)
 		self.c.call("finalize", self.deal_id, sender=STRANGER)
 		self.assertEqual(self.c.status(self.deal_id), "PAID")
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
 
 	def test_the_first_finalize_is_never_blocked_by_the_cooldown(self):
 		self.c.program_verdict(overall=True)
@@ -1146,7 +1159,7 @@ class TestCancellationNotice(ChainTest):
 
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_000)
+		self.deal_id = self.c.create_deal(escrow=GEN)
 
 	def test_first_cancel_does_not_move_the_escrow(self):
 		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
@@ -1155,7 +1168,7 @@ class TestCancellationNotice(ChainTest):
 		self.assertFalse(d["settled"])
 		self.assertGreater(d["cancel_requested_at"], 0)
 		self.assertEqual(self.c.host.transfers, [])
-		self.assertEqual(self.c.host.contract_balance, 1_000)
+		self.assertEqual(self.c.host.contract_balance, GEN)
 		self.assertEqual(len(self.c.events_named("CancelRequested")), 1)
 
 	def test_influencer_can_still_submit_during_the_notice(self):
@@ -1175,7 +1188,7 @@ class TestCancellationNotice(ChainTest):
 		self.c.call("finalize", self.deal_id, sender=STRANGER)
 		self.assertEqual(self.c.status(self.deal_id), "PAID")
 		self.assertEqual(
-			self.c.balance(INFLUENCER), 1_000, "published work must still be paid"
+			self.c.balance(INFLUENCER), GEN, "published work must still be paid"
 		)
 
 	def test_cancel_cannot_complete_before_the_notice_elapses(self):
@@ -1183,7 +1196,7 @@ class TestCancellationNotice(ChainTest):
 		self.c.warp(hypebond.CANCEL_NOTICE - 60)
 		with self.assertReverts("notice has not elapsed"):
 			self.c.call("cancel_deal", self.deal_id, sender=BRAND)
-		self.assertEqual(self.c.host.contract_balance, 1_000)
+		self.assertEqual(self.c.host.contract_balance, GEN)
 
 	def test_cancel_completes_after_the_notice(self):
 		"""A brand can still walk away from a deal nobody engaged with."""
@@ -1223,7 +1236,7 @@ class TestUnreachableNeedsConfirmation(ChainTest):
 
 	def setUp(self) -> None:
 		super().setUp()
-		self.deal_id = self.c.create_deal(escrow=1_000)
+		self.deal_id = self.c.create_deal(escrow=GEN)
 		self.c.submit_passing_post(self.deal_id)
 		self.c.warp_days(3.1)
 
@@ -1248,7 +1261,7 @@ class TestUnreachableNeedsConfirmation(ChainTest):
 		self.c.program_verdict(overall=True)
 		self.c.call("finalize", self.deal_id, sender=STRANGER)
 		self.assertEqual(self.c.status(self.deal_id), "PAID")
-		self.assertEqual(self.c.balance(INFLUENCER), 1_000)
+		self.assertEqual(self.c.balance(INFLUENCER), GEN)
 
 	def test_a_settled_deal_does_not_claim_to_be_unreachable(self):
 		"""Once a fetch succeeds the deal settles in that same call, so the
@@ -1319,7 +1332,7 @@ class TestViews(ChainTest):
 
 	def test_limit_is_capped_at_fifty(self):
 		for i in range(55):
-			self.c.create_deal(influencer=addr(0x01), escrow=1)
+			self.c.create_deal(influencer=addr(0x01), escrow=hypebond.MIN_ESCROW)
 		page = self.c.view("get_brand_deals", BRAND.as_hex, 0, 1_000)
 		self.assertEqual(len(page), 50, "unbounded reads must not be possible")
 
@@ -1367,6 +1380,15 @@ class TestViews(ChainTest):
 			)
 		}
 		self.assertEqual(ts_statuses, py_statuses)
+
+	def test_min_escrow_matches_the_shared_mirror(self):
+		"""A UI floor lower than the contract's just moves the rejection
+		on-chain, where it costs the brand gas to discover."""
+		shared = SHARED_TS.read_text(encoding="utf8")
+		expr = shared.split("MIN_ESCROW_WEI = ", 1)[1].split(";", 1)[0]
+		base, exp = expr.split("**")
+		value = int(base.strip().rstrip("n")) ** int(exp.strip().rstrip("n"))
+		self.assertEqual(value, hypebond.MIN_ESCROW)
 
 	def test_recheck_cooldown_matches_the_shared_mirror(self):
 		"""The UI disables the retry buttons from this number; if it drifts

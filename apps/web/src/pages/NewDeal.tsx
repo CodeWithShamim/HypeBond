@@ -6,6 +6,8 @@ import {
   dealSerial,
   PLATFORMS,
   PLATFORM_LABELS,
+  MIN_ESCROW_LABEL,
+  MIN_ESCROW_WEI,
   TERMS_MAX,
   TERMS_MIN,
   termsProblem,
@@ -97,7 +99,9 @@ export function NewDeal() {
   const me = wallet.address?.toLowerCase();
   const influencerOk =
     ADDR_RE.test(influencer.trim()) && influencer.trim().toLowerCase() !== me;
-  const escrowOk = escrow !== null && escrow > 0n;
+  // The contract enforces a floor (MIN_ESCROW) so dust deals cannot bury a
+  // stranger's dashboard; catch it inline rather than on-chain.
+  const escrowOk = escrow !== null && escrow >= MIN_ESCROW_WEI;
   // The contract rejects prompt-delimiter markers in terms, so catch it here
   // rather than letting the brand pay gas to learn that.
   const termsIssue = termsProblem(terms);
@@ -284,7 +288,7 @@ export function NewDeal() {
                     hint="locked in the contract until the deal settles"
                     error={
                       amountStr && !escrowOk
-                        ? "Enter a positive amount, e.g. 500 or 1.5"
+                        ? `Enter at least ${MIN_ESCROW_LABEL} GEN — e.g. 500 or 1.5`
                         : undefined
                     }
                   >

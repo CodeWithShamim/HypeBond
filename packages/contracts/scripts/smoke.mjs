@@ -38,27 +38,35 @@ const brandClient = createClient({ chain: studionet, account: brand });
 const influencerClient = createClient({ chain: studionet, account: influencer });
 
 /** Studio faucet. genlayer-js gates fundAccount() to localnet, so call the
- * RPC directly — studionet supports it too. */
-async function fund(addr) {
-  const res = await fetch(studionet.rpcUrls.default.http[0], {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "sim_fundAccount",
-      params: [addr, 1000],
-    }),
-  });
-  const body = await res.json();
-  if (body.error) throw new Error(`sim_fundAccount: ${JSON.stringify(body.error)}`);
-  for (let i = 0; i < 30; i++) {
-    const bal = await brandClient.getBalance({ address: addr });
-    if (BigInt(bal) > 0n) return bal;
-    await new Promise((r) => setTimeout(r, 2000));
+ * RPC directly — studionet supports it too.
+ *
+ * The faucet amount has to be a JSON number, and MIN_ESCROW (1e16) is above
+ * Number.MAX_SAFE_INTEGER, so top up in safe-integer chunks until the balance
+ * covers `target` rather than trying to send one huge literal. */
+async function fundTo(addr, target) {
+  const CHUNK = 9_000_000_000_000_000;
+  for (let round = 0; round < 40; round++) {
+    const bal = BigInt(await brandClient.getBalance({ address: addr }));
+    if (bal >= target) return bal;
+    const res = await fetch(studionet.rpcUrls.default.http[0], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "sim_fundAccount",
+        params: [addr, CHUNK],
+      }),
+    });
+    const body = await res.json();
+    if (body.error)
+      throw new Error(`sim_fundAccount: ${JSON.stringify(body.error)}`);
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  throw new Error(`account ${addr} still unfunded after faucet`);
+  throw new Error(`account ${addr} never reached ${target}`);
 }
+
+const ESCROW = 10n ** 16n; // 0.01 GEN = the contract's MIN_ESCROW floor
 
 let passed = 0;
 let failed = 0;
@@ -158,7 +166,7 @@ const read = (functionName, args) =>
 console.log(`Smoke-testing HypeBond at ${address}`);
 console.log(`  brand:      ${brand.address}`);
 console.log(`  influencer: ${influencer.address}`);
-const balance = await fund(brand.address);
+const balance = await fundTo(brand.address, ESCROW * 20n);
 console.log(`  brand funded, balance: ${balance}`);
 console.log("");
 
@@ -181,17 +189,16 @@ await expectRevert(
 );
 await expectRevert(
   "create_deal rejects short terms",
-  () => write(brandClient, "create_deal", [influencer.address, "too short", "instagram", 3], 1000n),
+  () => write(brandClient, "create_deal", [influencer.address, "too short", "instagram", 3], ESCROW),
   "terms must be 50-4000"
 );
 await expectRevert(
   "create_deal rejects unknown platform",
-  () => write(brandClient, "create_deal", [influencer.address, TERMS, "myspace", 3], 1000n),
+  () => write(brandClient, "create_deal", [influencer.address, TERMS, "myspace", 3], ESCROW),
   "platform must be"
 );
 
 // --- 3. happy-path create_deal
-const ESCROW = 100n; // must stay below the faucet balance
 const before = BigInt(await read("get_deal_count", []));
 const createReceipt = await write(
   brandClient,
@@ -289,7 +296,7 @@ await expectRevert(
         "instagram",
         3,
       ],
-      1000n
+      ESCROW
     ),
   "prompt delimiter markers"
 );
@@ -300,7 +307,7 @@ await expectRevert(
       brandClient,
       "create_deal",
       ["0x" + "0".repeat(40), TERMS, "instagram", 3],
-      1000n
+      ESCROW
     ),
   "zero address"
 );

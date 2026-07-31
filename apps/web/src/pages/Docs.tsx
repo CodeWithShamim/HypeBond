@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
+  CANCEL_NOTICE_HOURS,
   DEAL_STATUSES,
   GRACE_HOURS,
   PLATFORM_DOMAINS,
@@ -291,7 +292,7 @@ interface StatusRow {
  */
 const STATUS_ROWS: Record<DealStatus, StatusRow> = {
   FUNDED: {
-    meaning: 'Escrow locked. Waiting for the influencer to post.',
+    meaning: 'Escrow locked. Waiting for the influencer to post. May carry a pending cancellation notice.',
     next: 'submit_post · cancel_deal · claim_timeout',
     money: 'held',
   },
@@ -326,7 +327,7 @@ const STATUS_ROWS: Record<DealStatus, StatusRow> = {
     money: '→ brand',
   },
   CANCELLED: {
-    meaning: 'Brand cancelled before any post was submitted.',
+    meaning: `Brand cancelled before any post was submitted, after the ${CANCEL_NOTICE_HOURS}h notice.`,
     next: 'terminal',
     money: '→ brand',
   },
@@ -357,7 +358,7 @@ const ARCHITECTURE = `┌ apps/web ─ Vite · React 18 · TypeScript ───�
 const LIFECYCLE = `                     create_deal (payable)
                               │
                               ▼
-                          ┌────────┐  cancel_deal ──────► CANCELLED
+                          ┌────────┐  cancel_deal ──24h notice──► CANCELLED
                           │ FUNDED │  ${SUBMIT_WINDOW_DAYS}d no post ─────► REFUNDED
                           └────┬───┘
                     submit_post│ (influencer only)
@@ -863,8 +864,12 @@ export function Docs() {
 
                 <Method sig="cancel_deal(deal_id)" caller="the brand" from="FUNDED">
                   <p>
-                    Full refund, only before a post exists. Once a URL is in, the creator has done
-                    the work and the brand's exit is a verdict, not a button.
+                    Full refund, only before a post exists — and it takes{' '}
+                    <strong>two calls {CANCEL_NOTICE_HOURS} hours apart</strong>. The creator has to
+                    publish publicly before they can submit, so a one-shot cancel would let the brand
+                    watch the post go up and pull the escrow out from under it. The first call opens a
+                    public notice; <C>submit_post</C> stays open throughout and a submission voids the
+                    cancellation for good. Once a URL is in, the brand's exit is a verdict, not a button.
                   </p>
                 </Method>
 
@@ -968,7 +973,15 @@ export function Docs() {
                     <C key="g">DealRefunded</C>,
                     'Escrow returned to the brand; kind is "timeout" or "verification_failed".',
                   ],
-                  [<C key="h">DealCancelled</C>, 'Brand cancelled pre-post.'],
+                  [<C key="h">DealCancelled</C>, 'Brand cancelled pre-post, after the notice elapsed.'],
+                  [
+                    <C key="i">CancelRequested</C>,
+                    `Brand opened the ${CANCEL_NOTICE_HOURS}h cancellation notice; carries effective_at. The escrow has NOT moved and the creator can still submit.`,
+                  ],
+                  [
+                    <C key="j">PostUnreachable</C>,
+                    'Final check could not fetch the post. Not settled — an outage is not a deletion, so the reading must persist before the escrow moves.',
+                  ],
                 ]}
               />
             </Section>

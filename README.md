@@ -99,10 +99,27 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 - **Fail closed**: if validators can't agree on parseable verdict JSON the
   deal status doesn't change and an event fires; `recheck_post` /
   `finalize` can retry. A broken verification can never trigger a payout.
+  A payout also requires a **non-empty check list** — `all([])` is `True`,
+  so a verdict that verified nothing would otherwise release the escrow.
 - **Prompt-injection defense**: fetched page content is wrapped in
   `<<<PAGE>>>` delimiters and declared untrusted; the judge is told to
   ignore any instructions inside it, and the terms cannot redefine the
-  verdict format or grant automatic passes.
+  verdict format or grant automatic passes. Neutralization targets the
+  **delimiter runs** (`<<<`, `>>>`, `---`) the markers are built from, not
+  the literal markers — a model reads `<<<END  PAGE>>>` and
+  `<<< end page >>>` as the same terminator, so matching literally leaves
+  the attack open. Zero-width and bidi characters are stripped first so a
+  run cannot be hidden from the scanner while the model still sees it.
+- **Neither party can take the other's work.** The influencer must publish
+  publicly *before* they can submit the URL, so `cancel_deal` runs on a 24h
+  public notice and a submission during it voids the cancellation — the
+  brand cannot watch the post go up and pull the escrow. Symmetrically, a
+  page that cannot be **fetched** is not accepted as a deleted post until it
+  has read unreachable for an hour, so a platform rate-limit cannot refund
+  the brand out from under a post that is genuinely live.
+- **Metered AI spend**: `recheck_post` and `finalize` are both
+  anyone-callable and both cost a live fetch plus an LLM consensus round,
+  so they share one cooldown.
 - **No unbounded loops** in public methods — per-user index arrays with
   paged views. All timestamps from block context.
 - URL platform checks run **client-side and contract-side**.
@@ -113,7 +130,8 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 - [x] Influencer submits URL; wrong-platform URL rejected client-side (`isValidPostUrl`) and contract-side (`_check_post_url`).
 - [x] Initial check failure → GRACE_PERIOD with the AI's reason shown loud; resubmission works within 48h.
 - [x] Finalize pays creator on pass / refunds brand on fail; second settlement attempts revert via `settled`.
-- [x] Cancel only pre-submission; timeout claims only after the 14-day / 48-hour windows.
+- [x] Cancel only pre-submission, and only after a 24h public notice the creator can override by submitting; timeout claims only after the 14-day / 48-hour windows.
+- [x] A post that cannot be fetched is retried, not settled — only a *confirmed* disappearance refunds the brand.
 - [x] Verification prompt delimits untrusted content with injection-resistance instructions; JSON parse failure never pays out (fail closed).
 - [x] Boot loader tied to real readiness (fonts + paint), split-panel exit; route transitions < 650ms; seal slam + confetti on PASS.
 - [x] `useReducedMotion` disables marquees/confetti/transitions everywhere; app fully usable without motion.

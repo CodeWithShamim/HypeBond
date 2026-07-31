@@ -92,6 +92,18 @@ CANCEL_NOTICE = 24 * 3600
 # moves the escrow.
 UNREACHABLE_CONFIRM = 3600
 
+# Anti-spam floor on the escrow. `create_deal` appends to the INFLUENCER's
+# index, and anyone can name anyone — so without a floor an attacker fills a
+# stranger's dashboard with dust deals they cannot prune. The escrow is
+# refundable, so this is not a fee: it is a CAPITAL requirement. Filling 2000
+# slots ties up 20 GEN until the spammer cancels (24h notice) or times out
+# (14 days). It raises the bar rather than closing the hole — the structural
+# fix is a bounded / opt-in index, which is a storage-layout change.
+#
+# 0.01 GEN is far below any realistic sponsorship and far above dust.
+GEN = 10**18  # native token, 18 decimals
+MIN_ESCROW = GEN // 100  # 0.01 GEN
+
 MAX_PAGE_CHARS = 6000  # cap of fetched post text fed to the judge
 MAX_URL_CHARS = 500
 
@@ -430,6 +442,8 @@ class HypeBond(gl.Contract):
 			raise gl.vm.UserError("invalid influencer address")
 		if amount <= 0:
 			raise gl.vm.UserError("escrow amount must be positive")
+		if amount < MIN_ESCROW:
+			raise gl.vm.UserError("escrow must be at least 0.01 GEN")
 		if influencer_addr == brand:
 			raise gl.vm.UserError("influencer must differ from the brand")
 		if influencer_addr.as_hex.lower() == "0x" + "0" * 40:

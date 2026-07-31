@@ -45,26 +45,36 @@ const brand = createAccount(generatePrivateKey());
 const influencer = createAccount(generatePrivateKey());
 const client = createClient({ chain: studionet, account: brand });
 
-async function fund(addr) {
-  const res = await fetch(studionet.rpcUrls.default.http[0], {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "sim_fundAccount",
-      params: [addr, 1000],
-    }),
-  });
-  const body = await res.json();
-  if (body.error) throw new Error(`sim_fundAccount: ${JSON.stringify(body.error)}`);
-  for (let i = 0; i < 30; i++) {
-    const bal = await client.getBalance({ address: addr });
-    if (BigInt(bal) > 0n) return bal;
-    await new Promise((r) => setTimeout(r, 2000));
+/** Studio faucet. genlayer-js gates fundAccount() to localnet, so call the
+ * RPC directly — studionet supports it too.
+ *
+ * The faucet amount has to be a JSON number, and MIN_ESCROW (1e16) is above
+ * Number.MAX_SAFE_INTEGER, so top up in safe-integer chunks until the balance
+ * covers `target` rather than trying to send one huge literal. */
+async function fundTo(addr, target) {
+  const CHUNK = 9_000_000_000_000_000;
+  for (let round = 0; round < 40; round++) {
+    const bal = BigInt(await client.getBalance({ address: addr }));
+    if (bal >= target) return bal;
+    const res = await fetch(studionet.rpcUrls.default.http[0], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "sim_fundAccount",
+        params: [addr, CHUNK],
+      }),
+    });
+    const body = await res.json();
+    if (body.error)
+      throw new Error(`sim_fundAccount: ${JSON.stringify(body.error)}`);
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  throw new Error(`account ${addr} still unfunded`);
+  throw new Error(`account ${addr} never reached ${target}`);
 }
+
+const ESCROW = 10n ** 16n; // the contract's MIN_ESCROW floor
 
 let passed = 0;
 let failed = 0;
@@ -147,7 +157,7 @@ const hostile = (injected) =>
 
 console.log(`Verifying security fixes on HypeBond at ${address}`);
 console.log(`  brand: ${brand.address}`);
-await fund(brand.address);
+await fundTo(brand.address, 10n ** 16n * 20n);
 console.log("");
 
 // --- delimiter runs: respaced / repadded variants of the markers
@@ -163,7 +173,7 @@ for (const [label, injected] of [
 ]) {
   await expectRevert(
     label,
-    () => write("create_deal", [influencer.address, hostile(injected), "instagram", 3], 100n),
+    () => write("create_deal", [influencer.address, hostile(injected), "instagram", 3], ESCROW),
     "delimiter"
   );
 }
@@ -184,7 +194,7 @@ for (const [label, ch] of [
       write(
         "create_deal",
         [influencer.address, BASE + `- Must show the product${ch} on camera` + TAIL, "instagram", 3],
-        100n
+        ESCROW
       ),
     "invisible"
   );
@@ -202,7 +212,7 @@ await write(
     "instagram",
     3,
   ],
-  100n
+  ESCROW
 );
 const after = BigInt(await client.readContract({ address, functionName: "get_deal_count", args: [] }));
 check("ordinary generated terms create a deal", after === before + 1n, `${before} -> ${after}`);
@@ -212,7 +222,7 @@ const prose =
   "- Mention our co-founder -- politely -- and note 3 < 5 beats 5 > 3" +
   TAIL;
 const before2 = after;
-await write("create_deal", [influencer.address, prose, "instagram", 3], 100n);
+await write("create_deal", [influencer.address, prose, "instagram", 3], ESCROW);
 const after2 = BigInt(await client.readContract({ address, functionName: "get_deal_count", args: [] }));
 check(
   "prose with 2-char dash and angle runs is not over-rejected",
@@ -233,10 +243,17 @@ try {
   });
   viewDetail = "call succeeded; expected a revert";
 } catch (e) {
+  // gen_call does not carry the UserError payload back for view methods, so
+  // the assertion is that it REVERTS cleanly rather than returning garbage
+  // or hanging. The exact message is pinned offline instead.
   viewDetail = String(e?.message ?? e);
-  viewOk = /invalid address/i.test(viewDetail);
+  viewOk = /invalid address|execution failed|reverted|rollback/i.test(viewDetail);
 }
-check("get_brand_deals rejects a malformed address", viewOk, viewDetail.slice(0, 140));
+check(
+  "get_brand_deals reverts on a malformed address",
+  viewOk,
+  viewDetail.slice(0, 140)
+);
 
 console.log("");
 console.log(`Result: ${passed} passed, ${failed} failed`);

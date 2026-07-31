@@ -58,6 +58,10 @@ TERMS = (
 
 POST_URL = "https://x.com/creator/status/1234567890"
 
+# Native token unit. Escrow amounts in tests are expressed in GEN so they
+# clear the contract's MIN_ESCROW floor the way real deals do.
+GEN = 10**18
+
 
 class Revert(AssertionError):
 	"""Raised by Chain.call when the contract reverts."""
@@ -128,7 +132,7 @@ class Chain:
 		terms: str = TERMS,
 		platform: str = "x",
 		days: int = 3,
-		escrow: int = 1_000,
+		escrow: int = GEN,
 	) -> int:
 		return int(
 			self.call(
