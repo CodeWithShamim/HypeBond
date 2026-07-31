@@ -19,7 +19,13 @@ import {
   setExternalWallet,
   type WalletKind,
 } from "./genlayer";
-import { usePrivyBridge } from "./privy";
+import {
+  PRIVY_CONFIGURED,
+  loginWithPrivy,
+  logoutFromPrivy,
+  requestPrivyMount,
+  usePrivyBridge,
+} from "./privy";
 
 interface WalletState {
   address: `0x${string}` | null;
@@ -68,12 +74,27 @@ export function WalletProvider({ children }: { children: ReactNode }) {
    */
   const preferred = useRef<WalletKind | null>(savedKind());
 
+  /** True from the moment the user asks for Privy until the flow settles. */
+  const connectingPrivy = useRef(false);
+
   useEffect(() => {
     let alive = true;
     detectMetaMask().then((found) => alive && setMetaMaskAvailable(found));
     return () => {
       alive = false;
     };
+  }, []);
+
+  // A returning Privy user needs the SDK before anything can be restored;
+  // everyone else pays for it only when they reach for a wallet.
+  const [restoreExpired, setRestoreExpired] = useState(false);
+  useEffect(() => {
+    if (savedKind() !== "privy") return;
+    requestPrivyMount();
+    // If the chunk never arrives — offline, stale deploy — give up waiting so
+    // the user is offered a wallet again instead of a spinner that never ends.
+    const timer = setTimeout(() => setRestoreExpired(true), 20_000);
+    return () => clearTimeout(timer);
   }, []);
 
   // Restore a previous session. Waits for provider injection so a MetaMask
@@ -148,6 +169,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE, "privy");
       return;
     }
+    // Everything below treats "no session" as a session that ENDED, so it must
+    // not run while one is still being established. Loading the SDK on demand
+    // means a click walks through unmounted → ready-but-signed-out on its way
+    // to signed-in: without this guard that middle state clears the very
+    // preference the login is about to need, and the address never lands.
+    if (connectingPrivy.current) return;
     // Authenticated with no wallet yet (Privy is still minting the embedded
     // one) is a transient state — only a real logout clears the session.
     if (privy.authenticated) return;
@@ -189,16 +216,21 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connectPrivy = useCallback(async () => {
     setConnecting(true);
+    connectingPrivy.current = true;
     preferred.current = "privy";
     try {
-      await privy.login();
+      // Loads the SDK on first use, opens the modal, and waits for the wallet
+      // to exist — resolving at "logged in, no address yet" would flash the
+      // connect button back at a user who just finished signing in.
+      await loginWithPrivy();
     } catch (err) {
       preferred.current = savedKind();
       throw err;
     } finally {
+      connectingPrivy.current = false;
       setConnecting(false);
     }
-  }, [privy.login]);
+  }, []);
 
   const connectMetaMask = useCallback(async () => {
     setConnecting(true);
@@ -230,8 +262,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setKind("metamask");
     setExternalWallet(null);
     localStorage.removeItem(STORAGE);
-    if (wasPrivy) void privy.logout();
-  }, [kind, privy.logout]);
+    if (wasPrivy) void logoutFromPrivy();
+  }, [kind]);
+
+  // A returning Privy user is neither connected nor disconnected until the SDK
+  // has loaded and restored — showing them "Connect" in that window invites a
+  // pointless second login.
+  const restoringPrivy =
+    preferred.current === "privy" &&
+    address === null &&
+    !privy.ready &&
+    !restoreExpired;
 
   const value = useMemo<WalletState>(
     () => ({
@@ -240,8 +281,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       connecting,
       metaMaskAvailable,
       burnerAvailable: NETWORK === "studionet",
-      privyAvailable: privy.available,
-      privyLoading: privy.available && !privy.ready,
+      privyAvailable: PRIVY_CONFIGURED,
+      privyLoading: restoringPrivy,
       accountLabel: kind === "privy" ? privy.label : null,
       embedded: kind === "privy" && privy.embedded,
       connectPrivy,
@@ -254,8 +295,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       kind,
       connecting,
       metaMaskAvailable,
-      privy.available,
-      privy.ready,
+      restoringPrivy,
       privy.label,
       privy.embedded,
       connectPrivy,

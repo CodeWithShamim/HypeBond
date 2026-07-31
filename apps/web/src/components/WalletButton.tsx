@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { explorerAddressUrl } from "@/lib/genlayer";
+import { preloadPrivy } from "@/lib/privy";
 import { useWallet } from "@/lib/wallet";
 import { errorMessage, shortAddr } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -232,6 +233,10 @@ export function WalletButton({ compact = false }: { compact?: boolean }) {
     <div ref={ref} className={compact ? "relative" : "relative w-full"}>
       <Button
         onClick={() => setOpen((v) => !v)}
+        // Start the Privy download while the user reads the menu, so picking
+        // "Email or social" opens the modal instead of a spinner.
+        onPointerEnter={preloadPrivy}
+        onFocus={preloadPrivy}
         loading={wallet.privyLoading || busy !== null}
         aria-haspopup="menu"
         aria-expanded={open}

@@ -25,6 +25,10 @@ export default defineConfig({
     // runtime for a few kB of cache granularity.
     rollupOptions: {
       output: {
+        // Deliberately NOT listing @privy-io/react-auth here: it lazy-loads
+        // its own modal screens, connectors and onramps, and forcing it into
+        // one manual chunk collapses all of that back into a single 2.4 MB
+        // download every visitor pays on the landing page.
         manualChunks: {
           chain: ["genlayer-js"],
         },

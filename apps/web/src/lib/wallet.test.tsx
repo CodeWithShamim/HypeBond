@@ -6,28 +6,46 @@ const BURNER = `0x${"bb".repeat(20)}` as const;
 const PRIVY_ADDR = `0x${"aa".repeat(20)}` as const;
 const META_ADDR = `0x${"cc".repeat(20)}` as const;
 
-const { privy, setExternalWallet } = vi.hoisted(() => {
-  const externalWallet = { provider: { request: async () => null }, switchChain: async () => {} };
-  return {
-    setExternalWallet: vi.fn(),
-    privy: {
-      state: {
-        available: true,
-        ready: true,
-        authenticated: false,
-        address: null as string | null,
-        chainId: "eip155:61999",
-        label: null as string | null,
-        embedded: false,
-        login: vi.fn(),
-        logout: vi.fn(async () => undefined),
-        connectExternalWallet: vi.fn(async () => externalWallet),
+const {
+  privy,
+  setExternalWallet,
+  loginWithPrivy,
+  logoutFromPrivy,
+  requestPrivyMount,
+} = vi.hoisted(
+  () => {
+    const externalWallet = {
+      provider: { request: async () => null },
+      switchChain: async () => {},
+    };
+    return {
+      setExternalWallet: vi.fn(),
+      loginWithPrivy: vi.fn(async () => undefined),
+      logoutFromPrivy: vi.fn(async () => undefined),
+      requestPrivyMount: vi.fn(),
+      privy: {
+        state: {
+          available: true,
+          ready: true,
+          authenticated: false,
+          address: null as string | null,
+          chainId: "eip155:61999",
+          label: null as string | null,
+          embedded: false,
+          connectExternalWallet: vi.fn(async () => externalWallet),
+        },
       },
-    },
-  };
-});
+    };
+  }
+);
 
-vi.mock("./privy", () => ({ usePrivyBridge: () => privy.state }));
+vi.mock("./privy", () => ({
+  PRIVY_CONFIGURED: true,
+  usePrivyBridge: () => privy.state,
+  loginWithPrivy,
+  logoutFromPrivy,
+  requestPrivyMount,
+}));
 
 vi.mock("./genlayer", () => ({
   NETWORK: "studionet",
@@ -137,7 +155,7 @@ describe("privy session adoption", () => {
 
   it("connects through the Privy modal and remembers the choice", async () => {
     const user = userEvent.setup();
-    privy.state.login = vi.fn(async () => {
+    loginWithPrivy.mockImplementation(async () => {
       authenticate();
     });
     renderWallet();
@@ -148,6 +166,67 @@ describe("privy session adoption", () => {
       expect(screen.getByTestId("addr")).toHaveTextContent(PRIVY_ADDR)
     );
     expect(localStorage.getItem("hypebond.wallet")).toBe("privy");
+  });
+
+  /**
+   * The SDK loads on demand, so a first-time connect walks through
+   * unmounted → ready-but-signed-out → signed-in. That middle state looks
+   * exactly like a logout, and treating it as one clears the preference the
+   * login is about to need — leaving the user authenticated with Privy but
+   * still staring at a Connect button.
+   */
+  it("survives the signed-out beat while the SDK is loading", async () => {
+    const user = userEvent.setup();
+    // Nothing mounted yet: this is a visitor's first reach for a wallet.
+    Object.assign(privy.state, { available: false, ready: false });
+
+    loginWithPrivy.mockImplementation(async () => {
+      // The SDK arrives and reports "ready, nobody signed in".
+      Object.assign(privy.state, { available: true, ready: true });
+      rendered.rerender(harness);
+      await Promise.resolve();
+      // Then the user finishes signing in.
+      authenticate();
+    });
+
+    const harness = (
+      <WalletProvider>
+        <Probe />
+      </WalletProvider>
+    );
+    const rendered = render(harness);
+
+    await user.click(screen.getByText("connect privy"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("addr")).toHaveTextContent(PRIVY_ADDR)
+    );
+    expect(localStorage.getItem("hypebond.wallet")).toBe("privy");
+  });
+
+  it("still forgets Privy when a restore genuinely finds no session", async () => {
+    localStorage.setItem("hypebond.wallet", "privy");
+    renderWallet();
+
+    await waitFor(() =>
+      expect(localStorage.getItem("hypebond.wallet")).toBeNull()
+    );
+  });
+
+  /** The SDK is lazily loaded, so a returning user needs it fetched at boot. */
+  it("loads the SDK on boot only for a saved Privy session", async () => {
+    localStorage.setItem("hypebond.wallet", "burner");
+    const guest = renderWallet();
+    await waitFor(() =>
+      expect(screen.getByTestId("addr")).toHaveTextContent(BURNER)
+    );
+    expect(requestPrivyMount).not.toHaveBeenCalled();
+    guest.unmount();
+
+    localStorage.setItem("hypebond.wallet", "privy");
+    authenticate();
+    renderWallet();
+    await waitFor(() => expect(requestPrivyMount).toHaveBeenCalled());
   });
 });
 
@@ -178,7 +257,7 @@ describe("privy signer registration", () => {
 
     await user.click(screen.getByText("disconnect"));
 
-    expect(privy.state.logout).toHaveBeenCalled();
+    expect(logoutFromPrivy).toHaveBeenCalled();
     expect(setExternalWallet).toHaveBeenLastCalledWith(null);
     expect(screen.getByTestId("addr")).toHaveTextContent("none");
     expect(localStorage.getItem("hypebond.wallet")).toBeNull();
@@ -191,7 +270,7 @@ describe("privy signer registration", () => {
     await user.click(screen.getByText("connect burner"));
     await user.click(screen.getByText("disconnect"));
 
-    expect(privy.state.logout).not.toHaveBeenCalled();
+    expect(logoutFromPrivy).not.toHaveBeenCalled();
     expect(screen.getByTestId("addr")).toHaveTextContent("none");
   });
 });

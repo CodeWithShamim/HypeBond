@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { PrivyAuthProvider } from "@/lib/privy";
+import { PrivyAuthMount } from "@/lib/privy";
 import { WalletProvider } from "@/lib/wallet";
 import { ToastProvider } from "@/lib/toast";
 import { BootLoader } from "@/components/motion/BootLoader";
@@ -84,20 +84,20 @@ export default function App() {
   const [booted, setBooted] = useState(false);
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Privy outermost: WalletProvider reads its session through hooks. */}
-      <PrivyAuthProvider>
-        <WalletProvider>
-          <ToastProvider>
-            {!booted && <BootLoader onComplete={() => setBooted(true)} />}
-            <Shell>
-              {/* Inside the Shell so a crashed route keeps nav + wallet usable. */}
-              <ErrorBoundary>
-                <AnimatedRoutes />
-              </ErrorBoundary>
-            </Shell>
-          </ToastProvider>
-        </WalletProvider>
-      </PrivyAuthProvider>
+      <WalletProvider>
+        <ToastProvider>
+          {!booted && <BootLoader onComplete={() => setBooted(true)} />}
+          <Shell>
+            {/* Inside the Shell so a crashed route keeps nav + wallet usable. */}
+            <ErrorBoundary>
+              <AnimatedRoutes />
+            </ErrorBoundary>
+          </Shell>
+          {/* Renders no UI of its own (Privy's modal is a portal), so the SDK
+              can appear mid-session without remounting a single page. */}
+          <PrivyAuthMount />
+        </ToastProvider>
+      </WalletProvider>
     </QueryClientProvider>
   );
 }

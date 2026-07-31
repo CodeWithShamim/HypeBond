@@ -19,12 +19,24 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
-// Node 22+ defines a global `localStorage` that is undefined unless the
-// experimental web-storage flag is on, and it shadows the jsdom one — so
-// unqualified `localStorage` in app code resolves to nothing.
-if (!globalThis.localStorage && window.localStorage) {
+// Recent Node versions define a global `localStorage` that stays undefined
+// without `--localstorage-file`, and it shadows the jsdom implementation — so
+// every `localStorage` reference in app code resolves to nothing. The wallet
+// keeps its session there, so tests need a real one.
+if (!globalThis.localStorage) {
+  const store = new Map<string, string>();
+  const memoryStorage: Storage = {
+    get length() {
+      return store.size;
+    },
+    key: (i: number) => [...store.keys()][i] ?? null,
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+  };
   Object.defineProperty(globalThis, "localStorage", {
-    value: window.localStorage,
+    value: memoryStorage,
     configurable: true,
   });
 }

@@ -1,5 +1,4 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
 import {
   DEAL_STATUSES,
   GRACE_HOURS,
@@ -14,7 +13,7 @@ import {
   type DealStatus,
 } from '@hypebond/shared';
 import { PageItem } from '@/components/motion/PageTransition';
-import { Button, SectionTitle, StatusChip, StickerCard } from '@/components/ui';
+import { SectionTitle, StatusChip, StickerCard } from '@/components/ui';
 import { CONTRACT_ADDRESS, CONTRACT_CONFIGURED, NETWORK } from '@/lib/genlayer';
 import { shortAddr } from '@/lib/format';
 
@@ -82,7 +81,7 @@ function useHashLanding(): void {
     if (!id || !SECTION_IDS.includes(id as (typeof SECTION_IDS)[number])) return;
     // One frame, so the route transition has laid the content out.
     const frame = requestAnimationFrame(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "auto" });
+      document.getElementById(id)?.scrollIntoView({ behavior: 'auto' });
     });
     return () => cancelAnimationFrame(frame);
   }, []);
@@ -337,7 +336,7 @@ const ARCHITECTURE = `┌ apps/web ─ Vite · React 18 · TypeScript ───�
 │  pages/       Landing · NewDeal · DealPage · Dashboard · Docs
 │  components/  Shell · Timeline · ChecksList · ui · motion/
 │  hooks/       useHypebond — TanStack Query, polls while live
-│  lib/         contract.ts · genlayer.ts · wallet · toast
+│  lib/         contract.ts · genlayer.ts · wallet · privy · toast
 └──┬──────────────────────────────────────────────────────────
    │  imports types, URL rules, terms builder, window lengths
 ┌──▼ packages/shared ─ the single source of shape ────────────
@@ -1143,7 +1142,11 @@ export function Docs() {
                   ],
                   [
                     <C key="d">lib/wallet.tsx</C>,
-                    'Connection state, account/chain change listeners, disconnect.',
+                    'Connection state across all three wallet kinds, session restore, account/chain change listeners, disconnect.',
+                  ],
+                  [
+                    <C key="e">lib/privy.tsx</C>,
+                    'Privy login: a lazily mounted SDK publishing its session into an external store, so the ~600 kB bundle is fetched on demand and arriving mid-session never remounts a page.',
                   ],
                 ]}
               />
@@ -1265,11 +1268,20 @@ pnpm dev`}</CodeBlock>
 
               <H3>Wallets</H3>
               <P>
-                MetaMask is the real path: the app adds and switches to the GenLayer network for
-                you. On studionet there is no gas token, so a "guest wallet" — a throwaway key kept
-                in <C>localStorage</C> — is offered as a fallback for anyone without an extension.
-                Read queries deliberately go through an account-less client, so a visitor who never
-                asks for a wallet never gets a private key minted for them.
+                Three ways in. <strong>Email or social</strong> goes through Privy: sign in with a
+                mail address, Google or X and Privy mints an embedded wallet on the spot — which is
+                the point, because a creator sent a bond link has an inbox, not a browser extension.{' '}
+                <strong>MetaMask</strong> stays a direct path and the app adds and switches to the
+                GenLayer network for you. On studionet there is no gas token, so a{' '}
+                <strong>guest wallet</strong> — a throwaway key kept in <C>localStorage</C> — is
+                offered as well. Read queries deliberately go through an account-less client, so a
+                visitor who never asks for a wallet never gets a private key minted for them.
+              </P>
+              <P>
+                Privy needs <C>VITE_PRIVY_APP_ID</C>; leave it blank and the option disappears
+                rather than breaking. The SDK is loaded on demand — the home page never pays for it
+                — and it signs through its own EIP-1193 provider rather than <C>window.ethereum</C>,
+                so an embedded wallet works with no extension installed at all.
               </P>
 
               <H3>When something is wrong</H3>
@@ -1457,28 +1469,6 @@ pnpm dev`}</CodeBlock>
                 ]}
               />
             </Section>
-          </PageItem>
-
-          {/* ---------- CTA ---------- */}
-          <PageItem>
-            <section className="rounded-card border-2 border-static p-8 text-center md:p-12">
-              <h2 className="font-display text-3xl font-bold uppercase tracking-tight text-bone md:text-4xl">
-                That's the whole <span className="text-bond">machine</span>
-              </h2>
-              <p className="mx-auto mt-3 max-w-md text-bone/60">
-                Write the terms, lock the bag, let the post speak for itself.
-              </p>
-              <div className="mt-7 flex flex-wrap justify-center gap-3">
-                <Link to="/new">
-                  <Button className="!px-8 !py-4 text-base">Start a bond</Button>
-                </Link>
-                <Link to="/dashboard">
-                  <Button variant="ghost" className="!px-8 !py-4 text-base">
-                    View bonds
-                  </Button>
-                </Link>
-              </div>
-            </section>
           </PageItem>
         </div>
 

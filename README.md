@@ -24,8 +24,10 @@ brand locks escrow ─→ creator posts ─→ instant AI content check
 - **Frontend** — `apps/web`: Vite + React 18 + TypeScript, react-router v6,
   Tailwind, Framer Motion (boot loader, route wipes, bond-seal slam +
   confetti, odometers), TanStack Query with polling while validators run.
-- **Chain client** — `genlayer-js` with MetaMask (auto-adds the GenLayer
-  network) or a free guest wallet on studionet.
+- **Chain client** — `genlayer-js` with three ways in: **Privy** (email /
+  Google / X login with an embedded wallet, for creators who don't run an
+  extension), **MetaMask** (auto-adds the GenLayer network), or a free guest
+  wallet on studionet.
 - **Shared** — `packages/shared`: TS types mirroring contract state, the
   terms builder, and platform URL rules (client mirror of contract checks).
 
@@ -46,6 +48,16 @@ pnpm dev
 
 Other commands: `pnpm build` (typecheck + production build),
 `pnpm lint:genvm` (contract lint/validation via genvm-linter).
+
+### Privy login (optional)
+
+Email / social sign-in with an embedded wallet needs an app id from
+[dashboard.privy.io](https://dashboard.privy.io) in `VITE_PRIVY_APP_ID`.
+Enable Email, Google and X as login methods there, and add the GenLayer
+chain id (`61999` studionet / `4221` asimov) to the app's networks. Leave
+the variable blank and the option is simply not offered — MetaMask and the
+guest wallet still work. The SDK is loaded on demand, so visitors who never
+connect don't download it.
 
 ## Tests
 
