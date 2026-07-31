@@ -30,7 +30,34 @@ export function burnerPrivateKey(): `0x${string}` {
   return key;
 }
 
-export type WalletKind = "metamask" | "burner";
+export type WalletKind = "privy" | "metamask" | "burner";
+
+/**
+ * Privy hands out a *fresh* EIP-1193 provider per wallet and per chain switch,
+ * while genlayer clients are cached for the lifetime of the tab. Handing the
+ * client a stable proxy instead of the provider object itself means a wallet
+ * or network switch re-points signing at the new provider rather than leaving
+ * a cached client bound to a dead one.
+ */
+let externalWallet: ExternalWallet | null = null;
+
+export interface ExternalWallet {
+  provider: EthereumProvider;
+  /** Ask the wallet to move to the GenLayer chain. */
+  switchChain: () => Promise<void>;
+}
+
+export function setExternalWallet(wallet: ExternalWallet | null): void {
+  externalWallet = wallet;
+}
+
+const externalProviderProxy: EthereumProvider = {
+  request: (args) => {
+    if (!externalWallet)
+      throw new Error("Wallet is no longer connected — reconnect and retry");
+    return externalWallet.provider.request(args);
+  },
+};
 
 /**
  * Keyed cache. A single slot would thrash: every read went through the
@@ -51,14 +78,23 @@ function cached(
 }
 
 /**
- * Client bound to the connected account. MetaMask accounts are passed as a
- * plain address — genlayer-js signs through window.ethereum. Burner accounts
- * sign locally.
+ * Client bound to the connected account. Address-only accounts sign through a
+ * provider: MetaMask implicitly via window.ethereum, Privy via the proxy above
+ * (embedded wallets never touch window.ethereum). Burner accounts sign locally.
  */
 export function genlayerClient(
   kind: WalletKind,
   address: `0x${string}` | null
 ): GenLayerClient<GenLayerChain> {
+  if (kind === "privy" && address) {
+    return cached(`${NETWORK}:privy:${address}`, () =>
+      createClient({
+        chain: CHAIN,
+        account: address,
+        provider: externalProviderProxy,
+      } as Parameters<typeof createClient>[0])
+    );
+  }
   if (kind === "metamask" && address) {
     return cached(`${NETWORK}:metamask:${address}`, () =>
       createClient({ chain: CHAIN, account: address })
@@ -134,11 +170,16 @@ export function detectMetaMask(timeoutMs = 3000): Promise<boolean> {
 /**
  * Assert the wallet is on the GenLayer chain, switching if not.
  *
- * Connect-time is not enough: the user can switch networks in MetaMask at any
- * point afterwards, and a write sent on the wrong chain either fails opaquely
- * or lands somewhere it shouldn't.
+ * Connect-time is not enough: the user can switch networks in their wallet at
+ * any point afterwards, and a write sent on the wrong chain either fails
+ * opaquely or lands somewhere it shouldn't.
+ *
+ * Burner accounts sign locally against the configured chain, so there is no
+ * wallet to steer and nothing to check.
  */
-export async function ensureCorrectChain(): Promise<void> {
+export async function ensureCorrectChain(kind: WalletKind): Promise<void> {
+  if (kind === "burner") return;
+  if (kind === "privy") return ensurePrivyChain();
   const eth = getEthereum();
   if (!eth) return;
   const wanted = `0x${CHAIN.id.toString(16)}`;
@@ -150,6 +191,24 @@ export async function ensureCorrectChain(): Promise<void> {
   }
   if (current?.toLowerCase() === wanted.toLowerCase()) return;
   await addGenLayerNetwork();
+}
+
+/**
+ * Privy owns its own network state, so the switch goes through the SDK rather
+ * than raw `wallet_switchEthereumChain`.
+ *
+ * On studionet the failure is tolerated: genlayer-js skips its own chain
+ * assertion for studio chains, and a Studio session that works fine shouldn't
+ * be blocked by a wallet that declines to acknowledge a local chain id. On a
+ * real network a wrong chain is a genuine hazard, so it propagates.
+ */
+async function ensurePrivyChain(): Promise<void> {
+  if (!externalWallet) return;
+  try {
+    await externalWallet.switchChain();
+  } catch (err) {
+    if (!CHAIN.isStudio) throw err;
+  }
 }
 
 /** Prompt MetaMask to add + switch to the GenLayer network. */

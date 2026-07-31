@@ -138,7 +138,7 @@ async function write(
 ): Promise<string> {
   const client = genlayerClient(kind, address);
   // The user may have switched networks since connecting.
-  if (kind === "metamask") await ensureCorrectChain();
+  await ensureCorrectChain(kind);
   await ensureConsensus(client);
   const hash = await client.writeContract({
     address: CONTRACT_ADDRESS,

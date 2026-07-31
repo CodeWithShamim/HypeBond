@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
+  cancelEffectiveAt,
+  cancelPending,
   checkCooldownUntil,
   dealSerial,
   isValidPostUrl,
@@ -114,8 +116,12 @@ export function DealPage() {
   const wallet = useWallet();
   const now = useNow();
 
+  // Derived before the mutation hooks: `cancel_deal` is a two-step flow and
+  // the toast verb depends on which step this call is.
+  const cancelIsPending = !!deal && cancelPending(deal);
+
   const finalize = useFinalize();
-  const cancel = useCancelDeal();
+  const cancel = useCancelDeal(cancelIsPending);
   const timeout = useClaimTimeout();
   const recheck = useRecheckPost();
 
@@ -146,6 +152,16 @@ export function DealPage() {
     [cooldownUntil, now]
   );
   const checkCoolingDown = cooldownUntil > 0 && !cooldown.done;
+  // Cancellation runs on a public notice so the brand cannot pull the escrow
+  // in the gap between the post going live and the URL being submitted.
+  const cancelAt = deal ? cancelEffectiveAt(deal) : 0;
+  const cancelCountdown = useMemo(
+    () => countdownTo(cancelAt, now),
+    [cancelAt, now]
+  );
+  const cancelReady = cancelIsPending && cancelCountdown.done;
+  // Final check could not reach the post. Not settled — awaiting confirmation.
+  const postUnreachable = !!deal && deal.unreachable_since > 0;
 
   if (!CONTRACT_CONFIGURED) {
     return (
@@ -288,6 +304,43 @@ export function DealPage() {
                 </div>
               )}
 
+              {/* Pending cancellation. The influencer has to publish BEFORE
+                  they can submit, so this is the one thing they must see
+                  before deciding to post: submitting voids the cancellation,
+                  but posting without submitting in time does not. */}
+              {cancelIsPending && (
+                <div className="mb-5 space-y-3">
+                  <ErrorStrip>
+                    <span className="font-bold uppercase">
+                      Cancellation pending:
+                    </span>{" "}
+                    {isInfluencer ? (
+                      <>
+                        the brand has started cancelling this bond. Submitting
+                        your post URL before the notice runs out keeps the bond
+                        alive and voids the cancellation. If you post but do
+                        not submit in time, you will not be paid.
+                      </>
+                    ) : (
+                      <>
+                        this bond is scheduled to cancel. The creator can still
+                        submit a post until the notice runs out, which voids
+                        the cancellation.
+                      </>
+                    )}
+                  </ErrorStrip>
+                  {cancelCountdown && !cancelCountdown.done && (
+                    <p className="font-mono text-sm text-heat">
+                      notice ends in{" "}
+                      <Odometer
+                        value={countdownLabel(cancelCountdown)}
+                        className="font-bold"
+                      />
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* influencer: submit / resubmit */}
               {isInfluencer &&
                 (deal.status === "FUNDED" ||
@@ -369,6 +422,17 @@ export function DealPage() {
                         : "Finalize bond"}
                     </Button>
                   )}
+                  {postUnreachable && (
+                    <ErrorStrip>
+                      <span className="font-bold uppercase">
+                        Post could not be reached:
+                      </span>{" "}
+                      the validators could not load the page. That is not
+                      treated as a deleted post yet — platforms rate-limit, so
+                      the bond only settles if it stays unreachable. If your
+                      post is live, finalize again shortly.
+                    </ErrorStrip>
+                  )}
                   {liveCountdown.done && checkCoolingDown && (
                     <p className="font-mono text-xs text-bone/40">
                       A check just ran without reaching a verdict. Finalization
@@ -386,13 +450,40 @@ export function DealPage() {
               {/* brand: cancel + timeouts */}
               {isBrand && deal.status === "FUNDED" && (
                 <div className="mt-5 flex flex-wrap gap-3 border-t-2 border-static pt-5">
-                  <Button
-                    variant="danger"
-                    loading={cancel.isPending}
-                    onClick={() => cancel.mutate({ dealId: deal.id })}
-                  >
-                    Cancel &amp; refund
-                  </Button>
+                  {!cancelIsPending && (
+                    <div className="w-full space-y-2">
+                      <Button
+                        variant="danger"
+                        loading={cancel.isPending}
+                        onClick={() => cancel.mutate({ dealId: deal.id })}
+                      >
+                        Start cancellation
+                      </Button>
+                      <p className="font-mono text-xs text-bone/40">
+                        Cancelling takes 24 hours. The creator can still submit
+                        a post during the notice, which keeps the bond alive —
+                        that is what stops a bond being pulled the moment a
+                        post goes up.
+                      </p>
+                    </div>
+                  )}
+                  {cancelIsPending && (
+                    <div className="w-full space-y-2">
+                      <Button
+                        variant="danger"
+                        loading={cancel.isPending}
+                        disabled={!cancelReady}
+                        onClick={() => cancel.mutate({ dealId: deal.id })}
+                      >
+                        {cancelReady
+                          ? "Complete cancellation & refund"
+                          : `Cancellable in ${countdownLabel(cancelCountdown)}`}
+                      </Button>
+                      <p className="font-mono text-xs text-bone/40">
+                        Notice opened {formatDate(deal.cancel_requested_at)}.
+                      </p>
+                    </div>
+                  )}
                   {submitTimeoutReady && (
                     <Button
                       variant="danger"

@@ -137,9 +137,15 @@ export function useFinalize() {
   );
 }
 
-export function useCancelDeal() {
-  return useChainMutation<{ dealId: number }, string>("Bond cancelled", (w, a) =>
-    writes.cancelDeal(w, a.dealId)
+/**
+ * `cancel_deal` is two calls: the first opens the 24h notice, the second
+ * completes the refund. Reporting "Bond cancelled" for the first one would be
+ * a lie about where the escrow is, so the verb follows the step.
+ */
+export function useCancelDeal(noticeAlreadyOpen = false) {
+  return useChainMutation<{ dealId: number }, string>(
+    noticeAlreadyOpen ? "Bond cancelled" : "Cancellation started",
+    (w, a) => writes.cancelDeal(w, a.dealId)
   );
 }
 

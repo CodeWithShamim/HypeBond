@@ -18,6 +18,8 @@ const deal: Deal = {
   verify_after: 0,
   grace_until: 0,
   last_check_at: 0,
+  cancel_requested_at: 0,
+  unreachable_since: 0,
   status: "FUNDED",
   verdict_reason: "",
   checks_passed: "",

@@ -204,6 +204,17 @@ class Chain:
 
 	# -- flows -------------------------------------------------------------
 
+	def cancel_deal(self, deal_id: int, *, brand: Address = BRAND) -> None:
+		"""Run the brand's two-step cancellation to completion.
+
+		The notice window is the anti-front-running control (see
+		`cancel_deal`), so completing a cancellation always means: request,
+		wait out CANCEL_NOTICE, confirm.
+		"""
+		self.call("cancel_deal", deal_id, sender=brand)
+		self.warp(hypebond.CANCEL_NOTICE + 1)
+		self.call("cancel_deal", deal_id, sender=brand)
+
 	def submit_passing_post(self, deal_id: int, url: str = POST_URL) -> None:
 		self.program_page("Loving the new drop from @hypebond #ad", url)
 		self.program_verdict(exists=True, overall=True)

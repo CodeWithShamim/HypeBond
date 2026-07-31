@@ -1,12 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { CONTRACT_CONFIGURED, NETWORK } from "@/lib/genlayer";
-import { useWallet } from "@/lib/wallet";
-import { errorMessage, shortAddr } from "@/lib/format";
-import { useToast } from "@/lib/toast";
 import { ExplorerLink } from "./ExplorerLink";
-import { Button } from "./ui";
+import { WalletButton } from "./WalletButton";
 
 const NAV = [
   { to: "/", label: "Home", icon: "◆", end: true },
@@ -21,93 +18,6 @@ function Wordmark() {
       <span className="text-bond">HYPE</span>
       <span className="text-bone">BOND</span>
     </NavLink>
-  );
-}
-
-function WalletChip({ compact = false }: { compact?: boolean }) {
-  const wallet = useWallet();
-  const toast = useToast();
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const connect = async (kind: "metamask" | "burner") => {
-    setBusy(true);
-    try {
-      if (kind === "metamask") await wallet.connectMetaMask();
-      else wallet.connectBurner();
-      setOpen(false);
-    } catch (err) {
-      toast.push("error", "Connect failed", errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (wallet.address) {
-    return (
-      <button
-        type="button"
-        onClick={wallet.disconnect}
-        title="Disconnect"
-        className={`group flex items-center gap-2 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-heat hover:text-heat ${
-          compact ? "" : "w-full"
-        }`}
-      >
-        <span className="h-2 w-2 rounded-full bg-volt" />
-        <span className="truncate">{shortAddr(wallet.address)}</span>
-        <span className="ml-auto hidden text-bone/30 group-hover:text-heat md:inline">
-          ✕
-        </span>
-      </button>
-    );
-  }
-
-  return (
-    <div className={compact ? "" : "w-full"}>
-      {open ? (
-        <div className="flex flex-col gap-2">
-          <Button
-            variant="ghost"
-            loading={busy && wallet.connecting}
-            className="!px-3 !py-2 text-xs"
-            onClick={() => connect("metamask")}
-            disabled={!wallet.metaMaskAvailable || busy}
-          >
-            MetaMask
-          </Button>
-          {wallet.burnerAvailable && (
-            <Button
-              variant="ghost"
-              className="!px-3 !py-2 text-xs"
-              onClick={() => connect("burner")}
-              disabled={busy}
-            >
-              Guest wallet
-            </Button>
-          )}
-          {!wallet.metaMaskAvailable && (
-            <p className="font-mono text-[10px] text-bone/40">
-              MetaMask not detected —{" "}
-              <a
-                href="https://metamask.io"
-                target="_blank"
-                rel="noreferrer"
-                className="text-pulse underline"
-              >
-                install it
-              </a>
-            </p>
-          )}
-        </div>
-      ) : (
-        <Button
-          className={compact ? "!px-3 !py-2 text-xs" : "w-full !py-2 text-xs"}
-          onClick={() => setOpen(true)}
-        >
-          Connect
-        </Button>
-      )}
-    </div>
   );
 }
 
@@ -146,7 +56,7 @@ export function Shell({ children }: { children: ReactNode }) {
             network: {NETWORK}
           </p>
           <ExplorerLink />
-          <WalletChip />
+          <WalletButton />
         </div>
       </aside>
 
@@ -155,7 +65,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Wordmark />
         <div className="flex items-center gap-2">
           <ExplorerLink compact />
-          <WalletChip compact />
+          <WalletButton compact />
         </div>
       </header>
 

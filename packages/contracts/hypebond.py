@@ -17,7 +17,7 @@ LIFECYCLE
                                    -> SUBMITTED     (check errored; recheck_post retries)
     finalize (after verify_after)  -> PAID          (pass: escrow -> influencer)
                                    -> VERIFIED_FAIL (fail: escrow -> brand)
-    cancel_deal (brand, pre-post)  -> CANCELLED     (escrow -> brand)
+    cancel_deal (brand, pre-post)  -> notice opened, then CANCELLED after 24h
     claim_timeout (brand)          -> REFUNDED      (escrow -> brand)
 
 SECURITY INVARIANTS
@@ -41,6 +41,13 @@ SECURITY INVARIANTS
   the scanner while the model still reads it.
 - Both anyone-can-call retry paths (`recheck_post`, `finalize`) share one
   cooldown: each spends a live web fetch plus an LLM consensus round.
+- NEITHER PARTY CAN TAKE THE OTHER'S WORK. The influencer must publish before
+  they can submit, so `cancel_deal` runs on a 24h public notice and a
+  submission during it voids the cancellation — the brand cannot watch the
+  post go up and pull the escrow. Symmetrically, an unreachable page is not
+  accepted as a deleted post until it has read unreachable for
+  UNREACHABLE_CONFIRM, so a platform rate-limit cannot refund the brand out
+  from under a post that is genuinely live.
 - No unbounded loops in public methods: per-user index arrays + paged views.
 - All timestamps come from the block context, never from user input.
 """
@@ -451,6 +458,8 @@ class HypeBond(gl.Contract):
 			verify_after=u256(0),
 			grace_until=u256(0),
 			last_check_at=u256(0),
+			cancel_requested_at=u256(0),
+			unreachable_since=u256(0),
 			status=FUNDED,
 			verdict_reason="",
 			checks_passed="",
@@ -533,13 +542,40 @@ class HypeBond(gl.Contract):
 
 	@gl.public.write
 	def cancel_deal(self, deal_id: u256) -> None:
-		"""Brand cancels before any post was submitted. Full refund."""
+		"""Brand cancels a deal no post has been submitted against.
+
+		TWO CALLS, and the gap between them is the security control.
+
+		The influencer has to publish PUBLICLY before they are able to call
+		`submit_post`. A cancellation that took effect immediately would let
+		the brand watch the post appear — in their own feed, no mempool access
+		needed — and reclaim the escrow before the submission landed. The
+		influencer cannot un-publish, so that is free advertising taken by
+		force.
+
+		So the first call only opens a 24h notice, which is visible on-chain.
+		`submit_post` stays open throughout it, and a submission moves the deal
+		out of FUNDED, which voids the cancellation permanently. The brand can
+		still walk away from a deal nobody engaged with; they just cannot do it
+		in the seconds after the post goes up.
+		"""
 		d = self._deal_or_revert(int(deal_id))
 		self._require_unsettled(d)
 		if gl.message.sender_address != d.brand:
 			raise gl.vm.UserError("only the brand can cancel")
 		if d.status != FUNDED:
 			raise gl.vm.UserError("deal can only be cancelled before a post is submitted")
+
+		now = self._now()
+		if int(d.cancel_requested_at) == 0:
+			d.cancel_requested_at = u256(now)
+			CancelRequested(
+				u256(int(deal_id)), effective_at=now + CANCEL_NOTICE
+			).emit()
+			return
+		if now < int(d.cancel_requested_at) + CANCEL_NOTICE:
+			raise gl.vm.UserError("cancellation notice has not elapsed yet")
+
 		# Effects before interaction.
 		d.settled = True
 		d.status = CANCELLED
@@ -597,7 +633,7 @@ class HypeBond(gl.Contract):
 		emitted, and no funds move. Never defaults to PASS.
 		"""
 		d.last_check_at = u256(self._now())
-		passed, reason, checks_json, ok = self._verify(d, final)
+		passed, reason, checks_json, ok, fetch_failed = self._verify(d, final)
 		if not ok:
 			VerificationErrored(u256(int(d.id))).emit()
 			return
@@ -607,6 +643,23 @@ class HypeBond(gl.Contract):
 		now = self._now()
 
 		if final:
+			if fetch_failed:
+				# "We could not look" is not "the post is gone". Platforms
+				# rate-limit and validators share egress addresses, so a
+				# single unreachable reading would hand the escrow to the
+				# brand for an outage the influencer did not cause — and it
+				# would be TERMINAL, unlike every other inconclusive result
+				# here. Require the condition to persist before settling.
+				if int(d.unreachable_since) == 0:
+					d.unreachable_since = u256(now)
+				if now < int(d.unreachable_since) + UNREACHABLE_CONFIRM:
+					PostUnreachable(
+						u256(int(d.id)), since=int(d.unreachable_since)
+					).emit()
+					return
+			else:
+				# Reachable again — a later outage starts a fresh window.
+				d.unreachable_since = u256(0)
 			# Terminal settlement: effects fully applied before any transfer.
 			d.settled = True
 			if passed:
@@ -631,11 +684,14 @@ class HypeBond(gl.Contract):
 					d.grace_until = u256(now + GRACE_WINDOW)
 				GracePeriodEntered(u256(int(d.id)), reason=reason[:200]).emit()
 
-	def _verify(self, d: Deal, final: bool) -> tuple[bool, str, str, bool]:
+	def _verify(self, d: Deal, final: bool) -> tuple[bool, str, str, bool, bool]:
 		"""Fetch the live post and judge it against the deal terms.
 
-		Returns (passed, reason, checks_json, ok). ok=False means the
-		verdict was unusable — the caller must fail closed.
+		Returns (passed, reason, checks_json, ok, fetch_failed).
+
+		ok=False means the verdict was unusable — the caller must fail closed.
+		fetch_failed=True means the page could not be retrieved at all, which
+		the caller must NOT treat as proof the post was deleted.
 		"""
 		terms = d.terms
 		post_url = d.post_url
@@ -665,10 +721,14 @@ class HypeBond(gl.Contract):
 
 			if not fetched or not page_text.strip():
 				# Nothing to judge: the post is unreachable. Deterministic
-				# fail verdict — no model call needed.
+				# fail verdict — no model call needed. `fetch_failed` marks it
+				# as "we could not look", which is NOT the same claim as "the
+				# model looked and the post is gone"; the caller needs the
+				# difference to avoid settling on a transient outage.
 				return json.dumps(
 					{
 						"exists": False,
+						"fetch_failed": True,
 						"checks": [
 							{
 								"requirement": "Post URL is live and publicly readable",
@@ -766,6 +826,9 @@ Respond with STRICT JSON only — no prose, no markdown fences, exactly:
 			return json.dumps(
 				{
 					"exists": exists,
+					# Stated explicitly on the model path too, so the
+					# equivalence principle always has both flags to compare.
+					"fetch_failed": False,
 					"checks": checks,
 					"overall_pass": overall,
 					"reason": reason,
@@ -778,21 +841,22 @@ only if: (a) their "exists" booleans are exactly equal, AND (b) their
 "overall_pass" booleans are exactly equal, AND (c) their checks agree —
 for requirements that clearly correspond between the two answers, the
 "passed" booleans must be equal (wording, ordering and evidence quotes
-may differ). The "reason" texts may differ in wording as long as they
-support the same outcome. If either answer contains an "error" key, they
-are equivalent only if both contain an "error" key."""
+may differ), AND (d) their "fetch_failed" booleans are exactly equal.
+The "reason" texts may differ in wording as long as they support the same
+outcome. If either answer contains an "error" key, they are equivalent
+only if both contain an "error" key."""
 
 		try:
 			result_raw = gl.eq_principle.prompt_comparative(do_judge, principle)
 			verdict = json.loads(result_raw)
 			if "error" in verdict:
-				return (False, "", "", False)
+				return (False, "", "", False, False)
 			exists = _verdict_bool(verdict["exists"])
 			overall = _verdict_bool(verdict["overall_pass"])
 			reason = str(verdict.get("reason", ""))[:500]
 			checks_in = verdict.get("checks", [])
 			if not isinstance(checks_in, list):
-				return (False, "", "", False)
+				return (False, "", "", False, False)
 			# Re-clamp before storing: the consensus payload is model-derived,
 			# so never let it dictate how much goes into contract storage.
 			checks: list[dict[str, typing.Any]] = []
@@ -809,6 +873,7 @@ are equivalent only if both contain an "error" key."""
 			# Same non-empty requirement as do_judge — this is the aggregation
 			# that actually gates the transfer, so it re-derives the verdict
 			# rather than trusting the consensus payload's overall_pass.
+			fetch_failed = _verdict_bool(verdict.get("fetch_failed", False))
 			passed = exists and overall and bool(checks) and all(c["passed"] for c in checks)
 			checks_json = json.dumps(
 				{
@@ -819,9 +884,9 @@ are equivalent only if both contain an "error" key."""
 				},
 				sort_keys=True,
 			)
-			return (passed, reason, checks_json, True)
+			return (passed, reason, checks_json, True, fetch_failed)
 		except Exception:
-			return (False, "", "", False)
+			return (False, "", "", False, False)
 
 	# ------------------------------------------------------------ views
 
@@ -884,6 +949,8 @@ are equivalent only if both contain an "error" key."""
 			"verify_after": int(d.verify_after),
 			"grace_until": int(d.grace_until),
 			"last_check_at": int(d.last_check_at),
+			"cancel_requested_at": int(d.cancel_requested_at),
+			"unreachable_since": int(d.unreachable_since),
 			"status": d.status,
 			"verdict_reason": d.verdict_reason,
 			"checks_passed": d.checks_passed,

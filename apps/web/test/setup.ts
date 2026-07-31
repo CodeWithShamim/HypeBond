@@ -19,6 +19,16 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
+// Node 22+ defines a global `localStorage` that is undefined unless the
+// experimental web-storage flag is on, and it shadows the jsdom one — so
+// unqualified `localStorage` in app code resolves to nothing.
+if (!globalThis.localStorage && window.localStorage) {
+  Object.defineProperty(globalThis, "localStorage", {
+    value: window.localStorage,
+    configurable: true,
+  });
+}
+
 if (!window.ResizeObserver) {
   window.ResizeObserver = class {
     observe() {}

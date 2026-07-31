@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -15,8 +16,10 @@ import {
   hasMetaMask,
   getEthereum,
   requestMetaMaskAccount,
+  setExternalWallet,
   type WalletKind,
 } from "./genlayer";
+import { usePrivyBridge } from "./privy";
 
 interface WalletState {
   address: `0x${string}` | null;
@@ -25,6 +28,15 @@ interface WalletState {
   metaMaskAvailable: boolean;
   /** Guest (burner) wallets are offered on studionet only — it's free. */
   burnerAvailable: boolean;
+  /** Privy is only offered when VITE_PRIVY_APP_ID is set. */
+  privyAvailable: boolean;
+  /** Privy is still restoring a prior session — connect UI should wait. */
+  privyLoading: boolean;
+  /** For Privy sessions: the email / handle / wallet the user signed in with. */
+  accountLabel: string | null;
+  /** True when the address is a Privy-managed embedded wallet. */
+  embedded: boolean;
+  connectPrivy: () => Promise<void>;
   connectMetaMask: () => Promise<void>;
   connectBurner: () => void;
   disconnect: () => void;
@@ -34,12 +46,27 @@ const WalletContext = createContext<WalletState | null>(null);
 
 const STORAGE = "hypebond.wallet";
 
+function savedKind(): WalletKind | null {
+  const saved = localStorage.getItem(STORAGE);
+  return saved === "privy" || saved === "metamask" || saved === "burner"
+    ? saved
+    : null;
+}
+
 export function WalletProvider({ children }: { children: ReactNode }) {
+  const privy = usePrivyBridge();
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [kind, setKind] = useState<WalletKind>("metamask");
   const [connecting, setConnecting] = useState(false);
   // Providers inject asynchronously, so this starts optimistic and settles.
   const [metaMaskAvailable, setMetaMaskAvailable] = useState(hasMetaMask());
+
+  /**
+   * Which wallet the user last chose. Privy restores its session on every page
+   * load whether or not this app is using it, so without an explicit
+   * preference a stale Privy login would hijack a MetaMask or guest session.
+   */
+  const preferred = useRef<WalletKind | null>(savedKind());
 
   useEffect(() => {
     let alive = true;
@@ -52,7 +79,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // Restore a previous session. Waits for provider injection so a MetaMask
   // session isn't silently dropped on a slow-injecting page load.
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE);
+    const saved = savedKind();
     if (saved === "burner" && NETWORK === "studionet") {
       const account = createAccount(burnerPrivateKey());
       setKind("burner");
@@ -74,6 +101,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           } else {
             // Authorization was revoked in the wallet — don't keep claiming
             // a metamask session that will never restore.
+            preferred.current = null;
             localStorage.removeItem(STORAGE);
           }
         })
@@ -97,6 +125,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         // Empty list = disconnected in the wallet. Clear the saved session
         // too, otherwise a refresh looks connected and every write throws.
         setAddress(null);
+        preferred.current = null;
         localStorage.removeItem(STORAGE);
       }
     };
@@ -104,10 +133,78 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return () => eth.removeListener?.("accountsChanged", onAccounts);
   }, [kind]);
 
+  // ------------------------------------------------------------- privy sync
+  //
+  // Privy owns the session (it survives reloads on its own), so this mirrors
+  // it into wallet state rather than storing the address ourselves. It only
+  // acts when Privy is the preferred wallet — see `preferred` above.
+  const isPrivySession = kind === "privy" && address !== null;
+  useEffect(() => {
+    if (!privy.available || !privy.ready) return;
+    if (preferred.current !== "privy") return;
+    if (privy.authenticated && privy.address) {
+      setKind("privy");
+      setAddress(privy.address);
+      localStorage.setItem(STORAGE, "privy");
+      return;
+    }
+    // Authenticated with no wallet yet (Privy is still minting the embedded
+    // one) is a transient state — only a real logout clears the session.
+    if (privy.authenticated) return;
+    if (isPrivySession) {
+      setAddress(null);
+      setKind("metamask");
+    }
+    preferred.current = null;
+    localStorage.removeItem(STORAGE);
+  }, [
+    privy.available,
+    privy.ready,
+    privy.authenticated,
+    privy.address,
+    isPrivySession,
+  ]);
+
+  /**
+   * Hand the signer to the chain client. Privy returns a new provider after a
+   * network switch, so `chainId` is a dependency: without it the cached client
+   * would keep signing through a provider pinned to the old chain.
+   */
+  useEffect(() => {
+    if (kind !== "privy" || !address) {
+      setExternalWallet(null);
+      return;
+    }
+    let alive = true;
+    privy.connectExternalWallet().then((wallet) => {
+      if (alive) setExternalWallet(wallet);
+    });
+    // Deliberately no clear-on-cleanup: this effect re-runs on any identity
+    // change of `connectExternalWallet`, and dropping the signer mid-flight
+    // would fail a transaction the user is already signing.
+    return () => {
+      alive = false;
+    };
+  }, [kind, address, privy.chainId, privy.connectExternalWallet]);
+
+  const connectPrivy = useCallback(async () => {
+    setConnecting(true);
+    preferred.current = "privy";
+    try {
+      await privy.login();
+    } catch (err) {
+      preferred.current = savedKind();
+      throw err;
+    } finally {
+      setConnecting(false);
+    }
+  }, [privy.login]);
+
   const connectMetaMask = useCallback(async () => {
     setConnecting(true);
     try {
       const addr = await requestMetaMaskAccount();
+      preferred.current = "metamask";
       setKind("metamask");
       setAddress(addr);
       localStorage.setItem(STORAGE, "metamask");
@@ -118,16 +215,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connectBurner = useCallback(() => {
     const account = createAccount(burnerPrivateKey());
+    preferred.current = "burner";
     setKind("burner");
     setAddress(account.address as `0x${string}`);
     localStorage.setItem(STORAGE, "burner");
   }, []);
 
   const disconnect = useCallback(() => {
+    // Clear the preference first: Privy's logout lands asynchronously, and the
+    // sync effect must not re-adopt the session on the way out.
+    const wasPrivy = kind === "privy";
+    preferred.current = null;
     setAddress(null);
     setKind("metamask");
+    setExternalWallet(null);
     localStorage.removeItem(STORAGE);
-  }, []);
+    if (wasPrivy) void privy.logout();
+  }, [kind, privy.logout]);
 
   const value = useMemo<WalletState>(
     () => ({
@@ -136,6 +240,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       connecting,
       metaMaskAvailable,
       burnerAvailable: NETWORK === "studionet",
+      privyAvailable: privy.available,
+      privyLoading: privy.available && !privy.ready,
+      accountLabel: kind === "privy" ? privy.label : null,
+      embedded: kind === "privy" && privy.embedded,
+      connectPrivy,
       connectMetaMask,
       connectBurner,
       disconnect,
@@ -145,6 +254,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       kind,
       connecting,
       metaMaskAvailable,
+      privy.available,
+      privy.ready,
+      privy.label,
+      privy.embedded,
+      connectPrivy,
       connectMetaMask,
       connectBurner,
       disconnect,

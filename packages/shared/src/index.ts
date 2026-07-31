@@ -154,6 +154,8 @@ export interface Deal {
   verify_after: number;
   grace_until: number;
   last_check_at: number;
+  cancel_requested_at: number; // brand's cancellation notice opened (0 = none)
+  unreachable_since: number; // first unfetchable final check (0 = reachable)
   status: DealStatus;
   verdict_reason: string;
   checks_passed: string; // JSON string of per-criterion results
@@ -258,6 +260,8 @@ export function parseDeal(v: unknown): Deal | null {
     verify_after: num(r.verify_after),
     grace_until: num(r.grace_until),
     last_check_at: num(r.last_check_at),
+    cancel_requested_at: num(r.cancel_requested_at),
+    unreachable_since: num(r.unreachable_since),
     status: dealStatus(r.status),
     verdict_reason: str(r.verdict_reason),
     checks_passed: str(r.checks_passed),
@@ -334,6 +338,34 @@ export const TERMS_MAX = 4000;
  * before the brand may reclaim. Mirrors STALE_WINDOW in hypebond.py.
  */
 export const STALE_WINDOW_DAYS = 14;
+
+/**
+ * How long the brand's cancellation notice runs before it can be completed.
+ * Mirrors CANCEL_NOTICE in hypebond.py.
+ *
+ * This window exists because the influencer must publish PUBLICLY before they
+ * can submit the URL: an instant cancel would let the brand watch the post go
+ * up and pull the escrow. Submitting during the notice voids the cancellation.
+ */
+export const CANCEL_NOTICE_HOURS = 24;
+
+/**
+ * How long a post must read unreachable before final verification accepts it
+ * as deleted. Mirrors UNREACHABLE_CONFIRM in hypebond.py.
+ */
+export const UNREACHABLE_CONFIRM_SECONDS = 3600;
+
+/** True when the brand has opened a cancellation notice that has not run out. */
+export function cancelPending(d: Deal): boolean {
+  return d.status === "FUNDED" && d.cancel_requested_at > 0;
+}
+
+/** When a pending cancellation becomes completable, or 0 if none is open. */
+export function cancelEffectiveAt(d: Deal): number {
+  return d.cancel_requested_at > 0
+    ? d.cancel_requested_at + CANCEL_NOTICE_HOURS * 3600
+    : 0;
+}
 
 /**
  * Minimum seconds between AI checks. Mirrors RECHECK_COOLDOWN in

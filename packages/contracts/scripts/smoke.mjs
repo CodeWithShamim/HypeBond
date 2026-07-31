@@ -305,16 +305,35 @@ await expectRevert(
   "zero address"
 );
 
-// --- 5. cancel_deal settles the deal
+// --- 5. cancel_deal runs on a notice, then settles
+//
+// The first call only opens the 24h notice: the influencer has to publish
+// PUBLICLY before they can submit, so an instant cancel would let the brand
+// watch the post go up and pull the escrow out from under it.
 await write(brandClient, "cancel_deal", [dealId]);
-const cancelled = await read("get_deal", [dealId]);
-check("cancel_deal -> status CANCELLED", cancelled?.status === "CANCELLED", `status=${cancelled?.status}`);
-check("cancel_deal -> settled=true", cancelled?.settled === true);
-await expectRevert(
-  "cancel_deal cannot run twice (settled guard)",
-  () => write(brandClient, "cancel_deal", [dealId]),
-  "already settled"
+const noticed = await read("get_deal", [dealId]);
+check(
+  "first cancel_deal opens a notice without settling",
+  noticed?.status === "FUNDED" && noticed?.settled === false,
+  `status=${noticed?.status} settled=${noticed?.settled}`
 );
+check(
+  "cancel notice is recorded on-chain",
+  Number(noticed?.cancel_requested_at ?? 0) > 0,
+  `cancel_requested_at=${noticed?.cancel_requested_at}`
+);
+await expectRevert(
+  "cancel_deal cannot complete before the notice elapses",
+  () => write(brandClient, "cancel_deal", [dealId]),
+  "notice has not elapsed"
+);
+check(
+  "escrow is still held during the notice",
+  BigInt((await read("get_deal", [dealId]))?.amount ?? 0n) === ESCROW
+);
+// Completing the cancellation needs the 24h notice to lapse, which a smoke
+// test cannot wait out — that path is covered offline by
+// TestCancellationNotice.
 
 console.log("");
 console.log(`Result: ${passed} passed, ${failed} failed`);
