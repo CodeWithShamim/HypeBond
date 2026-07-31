@@ -211,20 +211,27 @@ export function NewDeal() {
 
       {/* progress */}
       <PageItem>
+        {/* min-w-0 + a tighter label: at 320px the four full labels ("1.
+            Parties" …) wrapped onto two lines and collided with each other, so
+            below `sm` only the active step is named — the bars carry the rest. */}
         <ol className="flex gap-2">
           {STEPS.map((label, i) => (
-            <li key={label} className="flex-1">
+            <li key={label} className="min-w-0 flex-1">
               <div
                 className={`h-1.5 rounded-full ${
                   i < step ? "bg-bond" : i === step ? "bg-hype" : "bg-static"
                 }`}
               />
               <span
-                className={`mt-1.5 block font-mono text-[10px] uppercase tracking-widest ${
+                className={`mt-1.5 block truncate font-mono text-[10px] uppercase tracking-widest ${
                   i === step ? "text-hype" : "text-bone/35"
                 }`}
               >
-                {i + 1}. {label}
+                {i + 1}.
+                <span className={i === step ? "inline" : "hidden sm:inline"}>
+                  {" "}
+                  {label}
+                </span>
               </span>
             </li>
           ))}
@@ -456,8 +463,15 @@ export function NewDeal() {
             </motion.div>
           </AnimatePresence>
 
-          <div className="mt-8 flex justify-between border-t-2 border-static pt-6">
-            <Button variant="ghost" onClick={back} disabled={step === 0 || create.isPending}>
+          {/* The final label ("Lock 500 GEN & mint bond") is long enough to
+              crush "Back" at 320px, so the pair wraps instead of squeezing. */}
+          <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t-2 border-static pt-6">
+            <Button
+              variant="ghost"
+              onClick={back}
+              disabled={step === 0 || create.isPending}
+              className="!px-4"
+            >
               Back
             </Button>
             {step < STEPS.length - 1 ? (
@@ -465,7 +479,11 @@ export function NewDeal() {
                 Continue
               </Button>
             ) : (
-              <Button onClick={submit} loading={create.isPending}>
+              <Button
+                onClick={submit}
+                loading={create.isPending}
+                className="min-w-0 flex-1 !px-4 text-center sm:flex-none sm:!px-5"
+              >
                 Lock {escrow ? formatGen(escrow) : ""} GEN &amp; mint bond
               </Button>
             )}

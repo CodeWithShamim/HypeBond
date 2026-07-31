@@ -14,7 +14,10 @@ const NAV = [
 
 function Wordmark() {
   return (
-    <NavLink to="/" className="font-display text-xl font-bold tracking-tight">
+    <NavLink
+      to="/"
+      className="inline-flex min-h-11 shrink-0 items-center font-display text-xl font-bold tracking-tight"
+    >
       <span className="text-bond">HYPE</span>
       <span className="text-bone">BOND</span>
     </NavLink>
@@ -28,7 +31,10 @@ function Wordmark() {
 export function Shell({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
   return (
-    <div className="min-h-screen md:pl-56">
+    // min-h-[100svh]: on mobile 100vh is the *expanded* viewport, so a plain
+    // min-h-screen leaves a chunk of dead space under the fold while the
+    // browser's URL bar is showing.
+    <div className="min-h-[100svh] md:pl-56">
       {/* left rail (desktop) */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-56 flex-col border-r-2 border-static bg-void p-5 md:flex">
         <Wordmark />
@@ -60,8 +66,9 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* top bar (mobile) */}
-      <header className="sticky top-0 z-40 flex items-center justify-between border-b-2 border-static bg-void/95 px-4 py-3 backdrop-blur md:hidden">
+      {/* top bar (mobile) — pads into the notch/status bar when installed to
+          the home screen, where the page starts under the system chrome. */}
+      <header className="sticky top-0 z-40 flex items-center justify-between gap-2 border-b-2 border-static bg-void/95 px-4 py-3 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur md:hidden">
         <Wordmark />
         <div className="flex items-center gap-2">
           <ExplorerLink compact />
@@ -85,19 +92,20 @@ export function Shell({ children }: { children: ReactNode }) {
 
       {/* 12-col content grid. `relative` anchors the outgoing page, which
           PageFrame takes out of flow for the length of a route transition. */}
-      <main className="relative mx-auto w-full max-w-6xl px-4 pb-28 pt-6 md:px-8 md:pb-16">
+      <main className="relative mx-auto w-full max-w-6xl px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-6 md:px-8 md:pb-16">
         {children}
       </main>
 
-      {/* bottom tab bar (mobile) */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t-2 border-static bg-void md:hidden">
+      {/* bottom tab bar (mobile) — the extra bottom padding keeps the labels
+          clear of the iPhone home indicator, which sits over the tab bar. */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t-2 border-static bg-void pb-[env(safe-area-inset-bottom)] md:hidden">
         {NAV.map((n) => (
           <NavLink
             key={n.to}
             to={n.to}
             end={n.end}
             className={({ isActive }) =>
-              `flex flex-col items-center gap-0.5 py-2.5 font-display text-[10px] font-bold uppercase tracking-wide ${
+              `flex min-h-14 flex-col items-center justify-center gap-0.5 px-1 py-2 text-center font-display text-[10px] font-bold uppercase leading-tight tracking-wide ${
                 isActive ? "text-hype" : "text-bone/50"
               }`
             }

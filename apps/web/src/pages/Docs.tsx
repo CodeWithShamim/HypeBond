@@ -238,33 +238,43 @@ function Note({
 /** Horizontally scrollable table — the page body must never scroll. */
 function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
   return (
-    <div className="overflow-x-auto rounded-card border-2 border-static">
-      <table className="w-full min-w-[36rem] border-collapse text-left text-sm">
-        <thead>
-          <tr className="border-b-2 border-static bg-static/40">
-            {head.map((h) => (
-              <th
-                key={h}
-                scope="col"
-                className="px-4 py-2.5 font-display text-[11px] font-bold uppercase tracking-widest text-bone/50"
-              >
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} className="border-b border-static/60 last:border-0">
-              {r.map((cell, j) => (
-                <td key={j} className="px-4 py-3 align-top text-bone/70 [&>code]:whitespace-nowrap">
-                  {cell}
-                </td>
+    <div className="rounded-card border-2 border-static">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[36rem] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b-2 border-static bg-static/40">
+              {head.map((h) => (
+                <th
+                  key={h}
+                  scope="col"
+                  className="px-4 py-2.5 font-display text-[11px] font-bold uppercase tracking-widest text-bone/50"
+                >
+                  {h}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-b border-static/60 last:border-0">
+                {r.map((cell, j) => (
+                  <td
+                    key={j}
+                    className="px-4 py-3 align-top text-bone/70 [&>code]:whitespace-nowrap"
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* Same reasoning as Diagram: the table is wider than a phone, so name
+          the affordance instead of letting the last column go unnoticed. */}
+      <p className="border-t-2 border-static px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-bone/30 sm:hidden">
+        swipe the table sideways →
+      </p>
     </div>
   );
 }
@@ -484,14 +494,17 @@ export function Docs() {
       {/* ---------- mobile TOC ---------- */}
       <PageItem className="lg:hidden">
         <details className="rounded-card border-2 border-static p-4">
-          <summary className="cursor-pointer list-none font-display text-sm font-bold uppercase tracking-wide text-bone marker:content-none">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center font-display text-sm font-bold uppercase tracking-wide text-bone marker:content-none">
             <span className="mr-2 font-mono text-pulse">☰</span>
             On this page
           </summary>
           <ul className="mt-3 grid grid-cols-2 gap-1">
             {SECTIONS.map((s) => (
               <li key={s.id}>
-                <a href={`#${s.id}`} className="block py-1 font-mono text-xs text-bone/60">
+                <a
+                  href={`#${s.id}`}
+                  className="flex min-h-11 items-center font-mono text-xs text-bone/60"
+                >
                   {s.label}
                 </a>
               </li>

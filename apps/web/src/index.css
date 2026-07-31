@@ -15,11 +15,29 @@
 html {
   background: var(--void);
   color-scheme: dark;
+  /* iOS inflates body text in landscape unless this is pinned. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
   @apply bg-void text-bone font-body antialiased;
+  /* Decorative overhangs (the hero glow, the step-03 seal) must never open a
+     sideways scroll on a phone. `clip` over `hidden` — `hidden` turns the
+     element into a scroll container and kills `position: sticky` inside it,
+     which the app header and the docs ToC both rely on. `hidden` stays first
+     as the fallback for Safari < 16. */
   overflow-x: hidden;
+  overflow-x: clip;
+}
+
+/* Tap targets: iOS shows a grey flash on tap that reads as a rendering bug on
+   a dark UI — the app draws its own press states via framer-motion. */
+a,
+button,
+summary,
+[role="menuitem"] {
+  -webkit-tap-highlight-color: transparent;
 }
 
 ::selection {
@@ -62,6 +80,18 @@ input[type="range"] {
   border-radius: 2px;
   background: var(--static);
   cursor: pointer;
+  /* Don't let a drag on the track scroll the page instead of moving the thumb. */
+  touch-action: none;
+}
+
+/* A 4px track is hard to grab with a thumb. On touch, pad the control out to a
+   comfortable target while keeping the track itself visually thin. */
+@media (pointer: coarse) {
+  input[type="range"] {
+    height: 28px;
+    background: linear-gradient(var(--static), var(--static)) center / 100% 4px
+      no-repeat;
+  }
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;

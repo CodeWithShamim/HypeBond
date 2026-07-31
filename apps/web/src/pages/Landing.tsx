@@ -67,13 +67,22 @@ function StepCard({
   return (
     <StickerCard className="relative h-full overflow-visible p-6">
       <span className="font-mono text-xs font-bold text-hype">{n}</span>
-      <h3 className="mt-2 font-display text-xl font-bold uppercase tracking-tight text-bone">
+      {/* Tucked inside the card on mobile, the seal sits over the top-right
+          corner — keep the title out from under it until it overhangs again. */}
+      <h3
+        className={`mt-2 font-display text-xl font-bold uppercase tracking-tight text-bone ${
+          seal ? "pr-24 md:pr-0" : ""
+        }`}
+      >
         {title}
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-bone/60">{body}</p>
       {seal && (
+        // On a phone the card runs the full width of the gutter, so the
+        // desktop overhang would hang the seal off the side of the screen and
+        // get clipped. Tuck it inside the card until there's room to overhang.
         <motion.div
-          className="absolute -right-4 -top-6"
+          className="absolute -top-4 right-2 md:-right-4 md:-top-6"
           initial={reduced ? undefined : { opacity: 0 }}
           whileInView={reduced ? undefined : { opacity: 1 }}
           viewport={{ once: true, amount: 0.6 }}
@@ -99,12 +108,15 @@ export function Landing() {
     <div className="space-y-20 md:space-y-28">
       {/* ---------- hero ---------- */}
       <PageItem>
-        <section className="relative pt-8 md:pt-16">
+        {/* `overflow-x-clip` contains the glow below: it spins, and a rotating
+            square's bounding box is ~1.41x its side, so at phone widths the
+            256px blob reached ~362px and opened a sideways scroll. */}
+        <section className="relative overflow-x-clip pt-8 md:pt-16">
           {/* slow-rotating gradient seal behind the type */}
           {!reduced && (
             <div
               aria-hidden
-              className="bg-bond animate-spinSlow absolute -top-10 right-0 -z-10 h-64 w-64 rounded-full opacity-25 blur-2xl md:h-96 md:w-96"
+              className="bg-bond animate-spinSlow absolute -top-10 right-0 -z-10 h-48 w-48 rounded-full opacity-25 blur-2xl sm:h-64 sm:w-64 md:h-96 md:w-96"
             />
           )}
           <h1 className="font-display text-[17vw] font-bold uppercase leading-[0.9] tracking-tighter text-bone md:text-[7.5rem]">
@@ -120,12 +132,15 @@ export function Landing() {
               No agencies. No trust. No ghosting.
             </span>
           </p>
-          <div className="mt-8 flex flex-wrap gap-4">
-            <Link to="/new">
-              <Button className="!px-8 !py-4 text-base">Start a bond</Button>
+          {/* Full-width stacked CTAs on a phone, side by side once there's room. */}
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-4">
+            <Link to="/new" className="block sm:inline-block">
+              <Button className="w-full !px-8 !py-4 text-base sm:w-auto">
+                Start a bond
+              </Button>
             </Link>
-            <Link to="/dashboard">
-              <Button variant="ghost" className="!px-8 !py-4 text-base">
+            <Link to="/dashboard" className="block sm:inline-block">
+              <Button variant="ghost" className="w-full !px-8 !py-4 text-base sm:w-auto">
                 View bonds
               </Button>
             </Link>
@@ -216,7 +231,7 @@ export function Landing() {
                 key={f.q}
                 className="group rounded-card border-2 border-static p-5 open:border-pulse"
               >
-                <summary className="cursor-pointer list-none font-display text-base font-bold uppercase tracking-tight text-bone marker:content-none">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center font-display text-base font-bold uppercase tracking-tight text-bone marker:content-none">
                   <span className="mr-2 font-mono text-pulse group-open:hidden">＋</span>
                   <span className="mr-2 hidden font-mono text-pulse group-open:inline">－</span>
                   {f.q}

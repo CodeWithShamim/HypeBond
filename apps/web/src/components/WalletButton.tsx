@@ -44,7 +44,9 @@ function Popover({
       transition={{ duration: 0.14 }}
       // Desktop rail is at the bottom of the viewport, so its menu opens
       // upward; the mobile header menu drops down under the chip.
-      className={`z-50 w-64 rounded-card border-2 border-static bg-void p-2 shadow-sticker ${
+      // max-w keeps the menu inside the gutter on a 320px phone, where the
+      // anchor chip already starts close to the right edge.
+      className={`z-50 w-64 max-w-[calc(100vw-2rem)] rounded-card border-2 border-static bg-void p-2 shadow-sticker ${
         compact ? "absolute right-0 top-full mt-2" : "absolute bottom-full left-0 mb-2"
       }`}
       role="menu"
@@ -75,7 +77,7 @@ function MenuItem({
       role="menuitem"
       onClick={onClick}
       disabled={disabled}
-      className={`flex w-full items-start gap-3 rounded-card px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`flex min-h-11 w-full items-start gap-3 rounded-card px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         danger ? "hover:bg-heat/10" : "hover:bg-static/50"
       }`}
     >
@@ -167,8 +169,8 @@ export function WalletButton({ compact = false }: { compact?: boolean }) {
           aria-haspopup="menu"
           aria-expanded={open}
           title={wallet.accountLabel ?? wallet.address}
-          className={`flex items-center gap-2 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-hype hover:text-hype ${
-            compact ? "" : "w-full"
+          className={`flex min-h-11 items-center gap-2 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-hype hover:text-hype ${
+            compact ? "max-w-[9.5rem]" : "w-full"
           }`}
         >
           <span className="h-2 w-2 shrink-0 rounded-full bg-volt" />
@@ -202,7 +204,7 @@ export function WalletButton({ compact = false }: { compact?: boolean }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => setOpen(false)}
-                  className="flex w-full items-center gap-3 rounded-card px-3 py-2.5 transition-colors hover:bg-static/50"
+                  className="flex min-h-11 w-full items-center gap-3 rounded-card px-3 py-2.5 transition-colors hover:bg-static/50"
                 >
                   <span aria-hidden className="text-sm text-hype">
                     ↗

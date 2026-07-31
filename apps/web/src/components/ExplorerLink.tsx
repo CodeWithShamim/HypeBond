@@ -26,7 +26,7 @@ export function ExplorerLink({
         rel="noopener noreferrer"
         title={label}
         aria-label={label}
-        className={`inline-flex items-center gap-1.5 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-pulse hover:text-pulse ${className}`}
+        className={`inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-pulse hover:text-pulse ${className}`}
       >
         <span aria-hidden>⧉</span>
         <span className="hidden sm:inline">Explorer</span>
@@ -40,7 +40,7 @@ export function ExplorerLink({
       target="_blank"
       rel="noopener noreferrer"
       title={label}
-      className={`group flex w-full items-center gap-2 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-pulse hover:text-pulse ${className}`}
+      className={`group flex min-h-11 w-full items-center gap-2 rounded-card border-2 border-static px-3 py-2 font-mono text-xs text-bone/80 transition-colors hover:border-pulse hover:text-pulse ${className}`}
     >
       <span aria-hidden>⧉</span>
       <span>Explorer</span>

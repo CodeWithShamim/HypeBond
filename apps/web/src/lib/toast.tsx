@@ -68,7 +68,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="pointer-events-none fixed bottom-20 right-4 z-[90] flex w-[min(92vw,340px)] flex-col gap-2 md:bottom-6">
+      {/* Sits above the mobile tab bar and the home indicator below it. */}
+      <div className="pointer-events-none fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-[90] flex w-[min(92vw,340px)] flex-col gap-2 md:bottom-6">
         <AnimatePresence>
           {toasts.map((t) => {
             const s = KIND_STYLE[t.kind];

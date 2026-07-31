@@ -29,7 +29,9 @@ export function Button({
     <motion.button
       whileTap={reduced || disabled || loading ? undefined : { scale: 0.96 }}
       transition={{ type: "spring", stiffness: 500, damping: 24 }}
-      className={`inline-flex items-center justify-center gap-2 rounded-card px-5 py-3 font-display text-sm uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${BUTTON_STYLES[variant]} ${className}`}
+      // min-h-11 (44px) is the floor Apple's HIG asks for; callers that shrink
+      // the padding for a compact chrome slot can't accidentally go under it.
+      className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-card px-5 py-3 font-display text-sm uppercase tracking-wide transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${BUTTON_STYLES[variant]} ${className}`}
       disabled={disabled || loading}
       {...(rest as object)}
     >
@@ -129,8 +131,11 @@ export function Field({
   );
 }
 
+// text-base (16px) below `sm` is deliberate, not a sizing accident: iOS Safari
+// zooms the whole page when a focused input's font-size is under 16px, and the
+// user is then stranded at that zoom level for the rest of the form.
 const INPUT_CLASS =
-  "w-full rounded-card border-2 border-static bg-void px-4 py-3 font-mono text-sm text-bone placeholder:text-bone/25 focus:border-pulse focus:outline-none transition-colors";
+  "w-full rounded-card border-2 border-static bg-void px-4 py-3 font-mono text-base sm:text-sm text-bone placeholder:text-bone/25 focus:border-pulse focus:outline-none transition-colors";
 
 export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className = "", ...rest } = props;

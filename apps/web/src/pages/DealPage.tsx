@@ -207,7 +207,8 @@ export function DealPage() {
                 <PlatformIcon platform={deal.platform} size={16} />
                 {PLATFORM_LABELS[deal.platform]} · {dealSerial(deal.id)}
               </p>
-              <p className="mt-2 font-display text-5xl font-bold tracking-tight text-bone md:text-6xl">
+              {/* A four-figure escrow at text-5xl overruns a 320px card. */}
+              <p className="mt-2 break-all font-display text-4xl font-bold tracking-tight text-bone sm:text-5xl md:text-6xl">
                 <Odometer value={formatGen(deal.amount)} />
                 <span className="ml-2 text-xl text-bone/40">GEN</span>
               </p>
@@ -251,8 +252,14 @@ export function DealPage() {
             )}
           </div>
           {(settledPass || settledFail) && (
-            <div className="pointer-events-none absolute -right-6 -top-6 md:right-2 md:top-2">
-              <Seal verdict={settledPass ? "pass" : "fail"} size={130} />
+            // The card clips its overflow, so the desktop bleed would slice the
+            // seal in half on a phone where the card spans the full gutter.
+            <div className="pointer-events-none absolute -right-2 -top-2 md:right-2 md:top-2">
+              <Seal
+                verdict={settledPass ? "pass" : "fail"}
+                size={130}
+                className="origin-top-right scale-[0.62] sm:scale-100"
+              />
             </div>
           )}
         </StickerCard>
