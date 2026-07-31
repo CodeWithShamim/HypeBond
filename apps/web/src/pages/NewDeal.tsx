@@ -34,6 +34,21 @@ const STEPS = ["Parties", "Escrow", "Terms", "Review"] as const;
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
+// Starting values for the wizard — a workable draft the brand edits down,
+// rather than four empty steps. The creator address stays blank: it's the one
+// field with no sane default.
+const DEFAULTS = {
+  platform: "x" as Platform,
+  amount: "500",
+  minLiveDays: 7,
+  mentions: "@BrandName",
+  hashtags: "#BrandCampaign",
+  link: "brandsite.com",
+  tone: true,
+  originalOnly: true,
+  extra: "Must show the product on camera",
+};
+
 export function NewDeal() {
   const wallet = useWallet();
   const reduced = useReducedMotion();
@@ -45,15 +60,15 @@ export function NewDeal() {
 
   // form state
   const [influencer, setInfluencer] = useState("");
-  const [platform, setPlatform] = useState<Platform>("x");
-  const [amountStr, setAmountStr] = useState("");
-  const [minLiveDays, setMinLiveDays] = useState(7);
-  const [mentions, setMentions] = useState("");
-  const [hashtags, setHashtags] = useState("");
-  const [link, setLink] = useState("");
-  const [tone, setTone] = useState(true);
-  const [originalOnly, setOriginalOnly] = useState(true);
-  const [extra, setExtra] = useState("");
+  const [platform, setPlatform] = useState<Platform>(DEFAULTS.platform);
+  const [amountStr, setAmountStr] = useState(DEFAULTS.amount);
+  const [minLiveDays, setMinLiveDays] = useState(DEFAULTS.minLiveDays);
+  const [mentions, setMentions] = useState(DEFAULTS.mentions);
+  const [hashtags, setHashtags] = useState(DEFAULTS.hashtags);
+  const [link, setLink] = useState(DEFAULTS.link);
+  const [tone, setTone] = useState(DEFAULTS.tone);
+  const [originalOnly, setOriginalOnly] = useState(DEFAULTS.originalOnly);
+  const [extra, setExtra] = useState(DEFAULTS.extra);
 
   const terms = useMemo(
     () =>

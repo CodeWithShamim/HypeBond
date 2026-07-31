@@ -5,6 +5,7 @@ import { CONTRACT_CONFIGURED, NETWORK } from "@/lib/genlayer";
 import { useWallet } from "@/lib/wallet";
 import { errorMessage, shortAddr } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { ExplorerLink } from "./ExplorerLink";
 import { Button } from "./ui";
 
 const NAV = [
@@ -143,6 +144,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <p className="font-mono text-[10px] uppercase tracking-widest text-bone/30">
             network: {NETWORK}
           </p>
+          <ExplorerLink />
           <WalletChip />
         </div>
       </aside>
@@ -150,7 +152,10 @@ export function Shell({ children }: { children: ReactNode }) {
       {/* top bar (mobile) */}
       <header className="sticky top-0 z-40 flex items-center justify-between border-b-2 border-static bg-void/95 px-4 py-3 backdrop-blur md:hidden">
         <Wordmark />
-        <WalletChip compact />
+        <div className="flex items-center gap-2">
+          <ExplorerLink compact />
+          <WalletChip compact />
+        </div>
       </header>
 
       {/* contract-not-configured banner */}

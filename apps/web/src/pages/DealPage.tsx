@@ -33,6 +33,7 @@ import { Odometer } from "@/components/motion/Odometer";
 import { Seal } from "@/components/motion/Seal";
 import { Timeline } from "@/components/Timeline";
 import { ChecksList } from "@/components/ChecksList";
+import { ExplorerLink } from "@/components/ExplorerLink";
 import { PlatformIcon } from "@/components/PlatformTile";
 import {
   Button,
@@ -484,6 +485,15 @@ export function DealPage() {
                 Deal terms (on-chain)
               </h2>
               <MonoBlock>{deal.terms}</MonoBlock>
+              {/* Anyone — brand, creator, or a stranger — can audit the
+                  escrow: every action here is a public transaction. */}
+              <div className="mt-5 border-t-2 border-static pt-5">
+                <p className="mb-3 font-mono text-xs text-bone/40">
+                  Funding, submission and settlement are public transactions on
+                  the HypeBond contract — anyone can verify them.
+                </p>
+                <ExplorerLink className="sm:max-w-xs" />
+              </div>
             </StickerCard>
           </PageItem>
         </div>
