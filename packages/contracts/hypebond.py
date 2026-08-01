@@ -41,10 +41,12 @@ SECURITY INVARIANTS
   the live window and failed to settle. Without that, a brand could sit
   silently for STALE_WINDOW and reclaim the escrow from a post that was live
   and passing the whole time, purely because nobody called `finalize`.
-- MONEY IS PUSHED, NEVER CLAIMED. `emit_transfer` is emitted to consensus at
+- MONEY IS PUSHED, NEVER CLAIMED. `_pay` is emitted to consensus at
   finalization, so every settlement moves the escrow in the same transaction
   that writes the terminal status. There is no withdrawable-balance ledger
-  and no second step: `PAID` means the influencer has been paid.
+  and no second step: `PAID` means the influencer has been paid. The push is
+  an EXTERNAL message — see the note on `_Payee`; the internal-message form
+  cannot pay a wallet and loses the escrow when it tries.
 - Every untrusted string reaching the judging prompt is constrained: the post
   URL to a strict character allowlist, the fetched page to marker-neutralized
   text, and the deal terms to marker-free content. Neither party can close
@@ -215,6 +217,40 @@ PLATFORM_DOMAINS: dict[str, list[str]] = {
 	"youtube": ["youtube.com", "youtu.be"],
 	"tiktok": ["tiktok.com"],
 }
+
+
+# ---------------------------------------------------------------- payouts
+
+# EVERY SETTLEMENT PAYS AN EOA, SO EVERY SETTLEMENT MUST USE AN EXTERNAL
+# MESSAGE. `gl.get_contract_at(addr).emit_transfer(...)` emits an INTERNAL
+# GenVM message (`PostMessage`) — a method-less call the runtime routes to the
+# recipient's `__receive__`. That is fine between contracts, but the brand and
+# the influencer are plain wallets: the consensus layer classifies the child
+# transaction as a contract call, looks for a contract at the payee's address,
+# finds none, and fails it with "Contract 0x… not found".
+#
+# The failure is SILENT and LOSSY. The parent call still succeeds, so the deal
+# is written PAID/REFUNDED/CANCELLED/DECLINED with `settled = True` while the
+# escrow is debited from this contract and never credited to the payee. Deal 6
+# on deployment 0x8D656B0D… burned 500 GEN exactly this way.
+#
+# `gl.evm.contract_interface` emits an EXTERNAL message (`EthSend`) instead,
+# which becomes a plain value-transfer transaction and credits any address,
+# contract or not. It is the only correct way to pay a wallet from here.
+# Declared with empty View/Write bodies because nothing is ever called on the
+# payee — only `emit_transfer` is used.
+@gl.evm.contract_interface
+class _Payee:
+	class View:
+		pass
+
+	class Write:
+		pass
+
+
+def _pay(to: Address, amount: u256) -> None:
+	"""Push `amount` to `to`. The ONLY way money leaves this contract."""
+	_Payee(to).emit_transfer(value=amount)
 
 
 # ---------------------------------------------------------------- storage
@@ -688,7 +724,7 @@ class HypeBond(gl.Contract):
 		# Effects before interaction.
 		d.settled = True
 		d.status = CANCELLED
-		gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
+		_pay(d.brand, u256(int(d.amount)))
 		DealCancelled(u256(int(deal_id))).emit()
 
 	@gl.public.write
@@ -717,7 +753,7 @@ class HypeBond(gl.Contract):
 		d.settled = True
 		d.status = DECLINED
 		d.verdict_reason = "The creator declined this deal; escrow returned to the brand."
-		gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
+		_pay(d.brand, u256(int(d.amount)))
 		DealDeclined(u256(int(deal_id))).emit()
 		DealRefunded(u256(int(deal_id)), kind="declined").emit()
 
@@ -775,7 +811,7 @@ class HypeBond(gl.Contract):
 		d.settled = True
 		d.status = REFUNDED
 		d.verdict_reason = reason
-		gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
+		_pay(d.brand, u256(int(d.amount)))
 		DealRefunded(u256(int(deal_id)), kind="timeout").emit()
 
 	@gl.public.write
@@ -897,11 +933,11 @@ class HypeBond(gl.Contract):
 			d.settled = True
 			if passed:
 				d.status = PAID
-				gl.get_contract_at(d.influencer).emit_transfer(value=u256(int(d.amount)))
+				_pay(d.influencer, u256(int(d.amount)))
 				DealPaid(u256(int(d.id)), amount=int(d.amount)).emit()
 			else:
 				d.status = VERIFIED_FAIL
-				gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
+				_pay(d.brand, u256(int(d.amount)))
 				DealRefunded(u256(int(d.id)), kind="verification_failed").emit()
 		else:
 			if passed:

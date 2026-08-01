@@ -126,12 +126,12 @@ function TableOfContents() {
  */
 const LAST_RUN = {
   date: '2026-08-01',
-  deployed: '0x8D656B0D19034fC781BC6AC3691430F38353C2BD',
-  contractTests: 145,
+  deployed: '0xf13FDD9E5C3e72eC92a611cCd1779cde39f06D2f',
+  contractTests: 146,
   webTests: 177,
   gates: [
     ['pnpm lint:genvm', 'passed — 12 methods, 4 view / 8 write'],
-    ['pnpm test:contract', '145 passed'],
+    ['pnpm test:contract', '146 passed'],
     ['pnpm typecheck', 'clean'],
     ['pnpm test:web', '177 passed, 14 files'],
     ['pnpm build', 'clean'],

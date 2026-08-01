@@ -7,6 +7,7 @@ Run: python3 packages/contracts/tests/run.py
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -1217,6 +1218,35 @@ class TestEscrowAccounting(ChainTest):
 				self.assertEqual(c.host.contract_balance, 0)
 				self.assertEqual(sum(t.amount for t in c.host.transfers), escrow)
 
+	def test_every_payout_uses_an_external_message(self):
+		"""Payees are wallets, and a wallet cannot receive an INTERNAL message.
+
+		`gl.get_contract_at(addr).emit_transfer(...)` emits a method-less
+		contract call. The chain routes it to the recipient's `__receive__`,
+		finds no contract at a wallet address, and fails the child transaction
+		with "Contract 0x… not found" — AFTER the parent call has already
+		succeeded and debited the escrow. The deal reads settled, the payee is
+		never credited, and the money is gone. Deployment 0x8D656B0D… burned
+		500 GEN on `decline_deal` this way.
+
+		Only `gl.evm.contract_interface` emits the EXTERNAL message (`EthSend`)
+		that credits a plain address, so pin the whole settlement surface to
+		it: no payout may reach for the internal form again.
+		"""
+		source = (CONTRACT_DIR / "hypebond.py").read_text(encoding="utf8")
+		code = "\n".join(
+			line for line in source.splitlines() if not line.lstrip().startswith("#")
+		)
+		self.assertNotIn(
+			"get_contract_at",
+			code,
+			"a payout reverted to the internal-message form, which cannot pay a wallet",
+		)
+		self.assertIn("@gl.evm.contract_interface", source)
+		# One helper owns every transfer, so there is a single place to audit.
+		self.assertEqual(code.count("emit_transfer"), 1)
+		self.assertEqual(code.count("_pay("), 6)  # 1 definition + 5 call sites
+
 
 # ---------------------------------------------------------------- empty checks
 
@@ -1699,9 +1729,17 @@ class TestViews(ChainTest):
 			encoding="utf8"
 		)
 
-		readme_claim = readme.split("`pnpm test:contract` |", 1)[1].split("passed", 1)[0]
+		# The README states the count inside a padded markdown table, so the
+		# whitespace between the cell text and the pipe is presentation, not
+		# data — match it loosely or a reflowed table breaks the check.
+		readme_match = re.search(
+			r"`pnpm test:contract`\s*\|\s*(\d+)\s+passed", readme
+		)
+		self.assertIsNotNone(
+			readme_match, "README.md no longer states a contract-test count"
+		)
 		self.assertEqual(
-			int(readme_claim.strip()),
+			int(readme_match.group(1)),
 			total,
 			"README.md publishes a stale contract-test count",
 		)

@@ -204,24 +204,63 @@ class EmittedEvent(typing.NamedTuple):
 # ---------------------------------------------------------------- contracts
 
 
+def _do_transfer(to: Address, value) -> None:
+	amount = int(value)
+	if amount < 0:
+		raise Rollback("negative transfer")
+	if _HOST.contract_balance < amount:
+		raise Rollback(
+			f"insufficient contract balance: have {_HOST.contract_balance}, "
+			f"sending {amount}"
+		)
+	_HOST.contract_balance -= amount
+	_HOST.balances[to] = _HOST.balances.get(to, 0) + amount
+	_HOST.transfers.append(Transfer(to, amount))
+
+
 class _ContractHandle:
-	"""What `gl.get_contract_at(addr)` returns."""
+	"""What `gl.get_contract_at(addr)` returns — an INTERNAL message target.
+
+	`emit_transfer` here emits a method-less contract call, which the chain
+	routes to the recipient's `__receive__`. Against a wallet there is no
+	contract to route to and the child transaction fails with "Contract 0x…
+	not found" — while the parent call has already succeeded and the escrow
+	has already left this contract. That silent, lossy failure is modelled
+	here so a payout that goes back to the internal path fails a test instead
+	of burning money on chain. `gl.evm.contract_interface` is the EOA path.
+	"""
 
 	def __init__(self, address: Address):
 		self.address = address
 
 	def emit_transfer(self, value) -> None:
-		amount = int(value)
-		if amount < 0:
-			raise Rollback("negative transfer")
-		if _HOST.contract_balance < amount:
+		if self.address not in _HOST.deployed_contracts:
 			raise Rollback(
-				f"insufficient contract balance: have {_HOST.contract_balance}, "
-				f"sending {amount}"
+				f"Contract {self.address.as_hex} not found — an internal "
+				f"emit_transfer cannot pay an EOA; use gl.evm.contract_interface"
 			)
-		_HOST.contract_balance -= amount
-		_HOST.balances[self.address] = _HOST.balances.get(self.address, 0) + amount
-		_HOST.transfers.append(Transfer(self.address, amount))
+		_do_transfer(self.address, value)
+
+
+class _EvmProxy:
+	"""What an `@gl.evm.contract_interface` class returns when constructed.
+
+	Models an EXTERNAL message (`EthSend`): a plain value transfer that
+	credits any address, whether or not a contract lives there.
+	"""
+
+	def __init__(self, address: Address):
+		self.address = address if isinstance(address, Address) else Address(address)
+
+	def emit_transfer(self, *, value=0) -> None:
+		_do_transfer(self.address, value)
+
+
+class _Evm:
+	@staticmethod
+	def contract_interface(cls):
+		"""Decorator turning an interface declaration into a proxy factory."""
+		return _EvmProxy
 
 
 class Transfer(typing.NamedTuple):
@@ -340,6 +379,7 @@ class _Gl:
 	Contract = _Contract
 	Event = Event
 	vm = _Vm()
+	evm = _Evm()
 
 	def __init__(self) -> None:
 		self.public = _Public()
@@ -381,6 +421,11 @@ class Host:
 		self.contract_class = getattr(self, "contract_class", None)
 		self.contract_balance: int = 0
 		self.balances: dict[Address, int] = {}
+		# Addresses that actually host a contract. Everything else is a wallet,
+		# so an internal `get_contract_at(...).emit_transfer` to it fails the
+		# way the chain fails it. Tests may add entries to model contract-to-
+		# contract payments.
+		self.deployed_contracts: set[Address] = set()
 		self.events: list[EmittedEvent] = []
 		self.transfers: list[Transfer] = []
 		self.prompts: list[str] = []

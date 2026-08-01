@@ -116,7 +116,9 @@ Current results:
 | Security-fix verification, on-chain | 15 passed, 0 failed                   |
 | Production build                    | clean                                 |
 
-Deployed (studionet): `0x8D656B0D19034fC781BC6AC3691430F38353C2BD`
+Deployed (studionet): `0xf13FDD9E5C3e72eC92a611cCd1779cde39f06D2f`
+(`0x8D656B0D…` retired 2026-08-01 — its payouts used an internal message,
+which cannot pay a wallet, so every settlement burned its escrow.)
 
 The contract suite runs `hypebond.py` in plain CPython against a stub of the
 GenVM runtime, so it needs no node and no deploy. The stub models storage as

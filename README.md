@@ -69,30 +69,44 @@ pnpm test:web        # frontend only  (vitest)
 pnpm test:watch      # vitest in watch mode
 pnpm lint:genvm      # contract lint + validation via genvm-linter
 pnpm test:smoke      # against a DEPLOYED contract
+pnpm test:payout     # settlement really moves money, on-chain
 node packages/contracts/scripts/verify-fixes.mjs   # security fixes, on-chain
 ```
 
+`test:payout` is separate from `test:smoke` on purpose. Smoke stops at
+validation and the cancellation notice, and the offline suite runs against a
+test double — neither watches the *child* transaction that carries the escrow.
+That is exactly how a deployment can pass every gate while every settlement
+silently burns its escrow (see below).
+
 ### Last full run
 
-All eight gates green on **2026-08-01** against
-`0x8D656B0D19034fC781BC6AC3691430F38353C2BD` (studionet):
+All nine gates green on **2026-08-01** against
+`0xf13FDD9E5C3e72eC92a611cCd1779cde39f06D2f` (studionet):
 
-| Gate                          | Result                                         |
-| ----------------------------- | ---------------------------------------------- |
-| `pnpm lint:genvm`             | passed — 12 methods, 4 view / 8 write          |
-| `pnpm test:contract`          | 145 passed                                     |
-| `pnpm typecheck`              | clean                                          |
-| `pnpm test:web`               | 177 passed, 14 files                           |
-| `pnpm build`                  | clean                                          |
-| `pnpm verify`                 | exit 0                                         |
-| `pnpm test:smoke` (deployed)  | ⚠ not re-run since the escrow-fairness changes |
-| `verify-fixes.mjs` (deployed) | ⚠ not re-run since the escrow-fairness changes |
+| Gate                          | Result                                |
+| ----------------------------- | ------------------------------------- |
+| `pnpm lint:genvm`             | passed — 12 methods, 4 view / 8 write |
+| `pnpm test:contract`          | 146 passed                            |
+| `pnpm typecheck`              | clean                                 |
+| `pnpm test:web`               | 177 passed, 14 files                  |
+| `pnpm build`                  | clean                                 |
+| `pnpm verify`                 | exit 0                                |
+| `pnpm test:smoke` (deployed)  | 26 passed, 0 failed                   |
+| `pnpm test:payout` (deployed) | 8 passed, 0 failed                    |
+| `verify-fixes.mjs` (deployed) | 15 passed, 0 failed                   |
 
-> **Redeploy required.** `0xd557…cA85` predates the cancel-notice expiry, the
-> `VERIFYING` finalize-attempt guard, the initial-check unreachable confirm,
-> `decline_deal` and `prune_deals`. The storage layout changed too
-> (`first_submitted_at`), so this is a fresh deploy, not an upgrade. Redeploy
-> and re-run both on-chain gates before treating the numbers above as current.
+> **Payout fix, 2026-08-01.** Every settlement used
+> `gl.get_contract_at(payee).emit_transfer(...)`, which emits an *internal*
+> GenVM message — a method-less contract call. The brand and the influencer
+> are wallets, so the chain looked for a contract at the payee's address,
+> found none, and failed the child transaction with `Contract 0x… not found`.
+> The parent call still succeeded, so the deal was written settled while the
+> escrow left the contract and reached nobody. Payouts now go through
+> `gl.evm.contract_interface`, which emits an *external* message (`EthSend`)
+> that credits any address. Contracts are immutable, so this needed a fresh
+> deploy; `0x8D656B0D…` is retired with 5 open deals whose 2400 GEN cannot be
+> settled without burning it.
 
 The last two run against the **deployed** contract rather than the stub. That
 distinction matters: the stub is a test double, so passing there does not prove
