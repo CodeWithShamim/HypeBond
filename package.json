@@ -17,6 +17,7 @@
     "test:payout": "node packages/contracts/scripts/verify-payout.mjs",
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "deploy:contract": "node packages/contracts/scripts/deploy.mjs",
+    "seed": "node packages/contracts/scripts/seed.mjs",
     "lint:genvm": "uvx --from genvm-linter genvm-lint check packages/contracts/hypebond.py"
   },
   "packageManager": "pnpm@10.18.2"

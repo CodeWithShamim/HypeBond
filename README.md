@@ -49,6 +49,38 @@ pnpm dev
 Other commands: `pnpm build` (typecheck + production build),
 `pnpm lint:genvm` (contract lint/validation via genvm-linter).
 
+### Seeding a demo book (studionet)
+
+A freshly deployed contract has nothing in it, and screenshots of an empty
+dashboard sell nothing. `pnpm seed` fills one with a realistic deal book:
+
+```sh
+pnpm seed -- --dry-run              # print the plan, send nothing
+pnpm seed -- --tx 80 --seed 2026    # 80 real transactions, reproducible
+pnpm seed -- --for 0xYourWallet     # also address ~1 in 6 bonds to you
+```
+
+Every transaction is real. Twelve brand personas and sixteen creators get
+their own funded wallets and sign their own calls, so the book reads as many
+users rather than one script: escrows vary by brand tier, briefs are written
+per campaign, creators are matched to brands mostly on topic, and sends are
+paced and interleaved. `submit_post` runs the actual web fetch plus LLM
+consensus round — the seeder never writes a verdict, it only asks for one.
+
+Which statuses appear is therefore *not* scripted. Anything gated on a
+window lapsing (`PAID`, `VERIFIED_FAIL`, `CANCELLED`, `REFUNDED`) is out of
+reach because the clock comes from the block context and studionet has no
+time-travel RPC. What a seed produces is `FUNDED`, `FUNDED` with a live
+cancellation notice, `SUBMITTED`, `VERIFYING`, `GRACE_PERIOD` and `DECLINED`
+— the last one a real payout back to the brand.
+
+`--seed <n>` fixes the PRNG, so the same number regenerates the same
+personas, wallets, escrows and briefs. Each run writes a manifest to
+`packages/contracts/.seed/` (gitignored — it holds the throwaway private
+keys) with every wallet, deal id and transaction hash, plus a one-liner for
+browsing the app as one of the personas. Studionet only: it funds wallets
+through the Studio faucet and mints keys from a seeded PRNG.
+
 ### Privy login (optional)
 
 Email / social sign-in with an embedded wallet needs an app id from

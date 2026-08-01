@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 __pycache__/
 .DS_Store
+.seed/
