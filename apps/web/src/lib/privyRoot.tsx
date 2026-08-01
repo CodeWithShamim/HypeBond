@@ -38,7 +38,12 @@ const config: PrivyClientConfig = {
     loginMessage: "Bond the hype. Escrow, verified by AI validators.",
     walletList: ["detected_wallets", "metamask", "coinbase_wallet", "rainbow", "wallet_connect"],
   },
-  loginMethods: ["email", "google", "twitter", "wallet"],
+  // Deliberately no `loginMethods`. Setting it makes the SDK ignore the
+  // dashboard entirely and render whatever is listed here — so a method that
+  // is off in the dashboard still gets a button, and clicking it dies on a
+  // 403 `disallowed_login_method` with no UI feedback at all. Omitting it
+  // makes the dashboard the single source of truth: enabling Google or
+  // Twitter there makes them appear here with no code change.
   // A creator who was sent a bond link has an email, not a browser extension.
   // The embedded wallet is what makes that link acceptable without installing
   // anything, so it's minted for anyone arriving without a wallet.

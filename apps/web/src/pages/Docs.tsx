@@ -126,7 +126,7 @@ function TableOfContents() {
  */
 const LAST_RUN = {
   date: '2026-08-01',
-  deployed: '0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85',
+  deployed: '0x8D656B0D19034fC781BC6AC3691430F38353C2BD',
   contractTests: 145,
   webTests: 177,
   gates: [
@@ -327,7 +327,8 @@ interface StatusRow {
  */
 const STATUS_ROWS: Record<DealStatus, StatusRow> = {
   FUNDED: {
-    meaning: 'Escrow locked. Waiting for the influencer to post. May carry a pending cancellation notice.',
+    meaning:
+      'Escrow locked. Waiting for the influencer to post. May carry a pending cancellation notice.',
     next: 'submit_post · cancel_deal · claim_timeout',
     money: 'held',
   },
@@ -912,10 +913,11 @@ export function Docs() {
                   <p>
                     Full refund, only before a post exists — and it takes{' '}
                     <strong>two calls {CANCEL_NOTICE_HOURS} hours apart</strong>. The creator has to
-                    publish publicly before they can submit, so a one-shot cancel would let the brand
-                    watch the post go up and pull the escrow out from under it. The first call opens a
-                    public notice; <C>submit_post</C> stays open throughout and a submission voids the
-                    cancellation for good. Once a URL is in, the brand's exit is a verdict, not a button.
+                    publish publicly before they can submit, so a one-shot cancel would let the
+                    brand watch the post go up and pull the escrow out from under it. The first call
+                    opens a public notice; <C>submit_post</C> stays open throughout and a submission
+                    voids the cancellation for good. Once a URL is in, the brand's exit is a
+                    verdict, not a button.
                   </p>
                   <p>
                     The matured notice also <strong>expires</strong> after a further{' '}
@@ -927,11 +929,7 @@ export function Docs() {
                   </p>
                 </Method>
 
-                <Method
-                  sig="decline_deal(deal_id)"
-                  caller="the deal's influencer"
-                  from="FUNDED"
-                >
+                <Method sig="decline_deal(deal_id)" caller="the deal's influencer" from="FUNDED">
                   <p>
                     The creator's refusal. <C>create_deal</C> names an influencer who never agreed
                     to anything — anyone can address a bond to any wallet — so the named party needs
@@ -954,17 +952,18 @@ export function Docs() {
                     The escape hatch, gated per status: {SUBMIT_WINDOW_DAYS} days from creation with
                     no post; the {GRACE_HOURS}-hour grace window lapsed; or {STALE_WINDOW_DAYS} days
                     of a check that never resolved (from <C>first_submitted_at</C> for{' '}
-                    <C>SUBMITTED</C> — the first submission, so resubmitting during grace cannot push
-                    it out — and from <C>verify_after</C> for <C>VERIFYING</C>). Writes a
+                    <C>SUBMITTED</C> — the first submission, so resubmitting during grace cannot
+                    push it out — and from <C>verify_after</C> for <C>VERIFYING</C>). Writes a
                     human-readable reason into <C>verdict_reason</C> before refunding.
                   </p>
                   <p>
                     <C>VERIFYING</C> carries one extra condition: a <C>finalize</C> must have been{' '}
                     <strong>attempted</strong> since the live window ended and failed to settle.
-                    Unlike <C>SUBMITTED</C>, that status is no evidence anything went wrong — without
-                    the check, a brand could stay silent for {STALE_WINDOW_DAYS} days and reclaim the
-                    escrow from a post that was live and passing the whole time. A timeout is an
-                    escape hatch for a verdict that failed, not a substitute for one nobody asked for.
+                    Unlike <C>SUBMITTED</C>, that status is no evidence anything went wrong —
+                    without the check, a brand could stay silent for {STALE_WINDOW_DAYS} days and
+                    reclaim the escrow from a post that was live and passing the whole time. A
+                    timeout is an escape hatch for a verdict that failed, not a substitute for one
+                    nobody asked for.
                   </p>
                   <p>
                     Callable by anyone because the payee is fixed at the brand — there is nothing to
@@ -979,10 +978,11 @@ export function Docs() {
                   from="any status — settled entries only"
                 >
                   <p>
-                    Compacts <strong>settled</strong> bonds out of the caller's own brand and creator
-                    indexes, in batches the caller sizes (clamped at {PRUNE_MAX_STEPS}, because a
-                    public method must never loop over a length an attacker chose). Live bonds are
-                    never touched and nothing is deleted — a pruned bond stays readable by id.
+                    Compacts <strong>settled</strong> bonds out of the caller's own brand and
+                    creator indexes, in batches the caller sizes (clamped at {PRUNE_MAX_STEPS},
+                    because a public method must never loop over a length an attacker chose). Live
+                    bonds are never touched and nothing is deleted — a pruned bond stays readable by
+                    id.
                   </p>
                   <p>
                     This is the cleanup half of the spam defence. <C>MIN_ESCROW</C> only prices the
@@ -1077,7 +1077,10 @@ export function Docs() {
                     <C key="g">DealRefunded</C>,
                     'Escrow returned to the brand; kind is "timeout" or "verification_failed".',
                   ],
-                  [<C key="h">DealCancelled</C>, 'Brand cancelled pre-post, after the notice elapsed.'],
+                  [
+                    <C key="h">DealCancelled</C>,
+                    'Brand cancelled pre-post, after the notice elapsed.',
+                  ],
                   [
                     <C key="i">CancelRequested</C>,
                     `Brand opened the ${CANCEL_NOTICE_HOURS}h cancellation notice; carries effective_at. The escrow has NOT moved and the creator can still submit.`,
@@ -1475,21 +1478,17 @@ pnpm dev`}</CodeBlock>
 
               <H3>Last full run</H3>
               <P>
-                Every gate below passed on {LAST_RUN.date} against{' '}
-                <C>{LAST_RUN.deployed}</C>. The last two run against the deployed
-                contract rather than the stub — the stub is a test double, so passing there
-                does not prove the real GenVM accepts the same inputs.
+                Every gate below passed on {LAST_RUN.date} against <C>{LAST_RUN.deployed}</C>. The
+                last two run against the deployed contract rather than the stub — the stub is a test
+                double, so passing there does not prove the real GenVM accepts the same inputs.
               </P>
               <Table
                 head={['Gate', 'Result']}
-                rows={LAST_RUN.gates.map(([gate, result]) => [
-                  <C key={gate}>{gate}</C>,
-                  result,
-                ])}
+                rows={LAST_RUN.gates.map(([gate, result]) => [<C key={gate}>{gate}</C>, result])}
               />
               <Note tone="good" title="Reproduce it">
-                <C>pnpm verify</C> covers gates 2–6 offline and is the one to run before you
-                push. The two on-chain gates need a Studio address in <C>.env</C>.
+                <C>pnpm verify</C> covers gates 2–6 offline and is the one to run before you push.
+                The two on-chain gates need a Studio address in <C>.env</C>.
               </Note>
 
               <H3>What the stub gives you</H3>

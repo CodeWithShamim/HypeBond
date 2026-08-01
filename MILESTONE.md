@@ -13,8 +13,8 @@ the **actual live page** and judge it against those terms, reaching consensus on
 per-criterion booleans. Pass releases the escrow to the influencer; fail refunds
 the brand. No agency in the middle, no screenshots, no ghosting.
 
-The trust problem is not "write me a better caption" — it is *did this person
-actually post what they promised, and is it still up?* That answer lives on the
+The trust problem is not "write me a better caption" — it is _did this person
+actually post what they promised, and is it still up?_ That answer lives on the
 open web, changes over time, and both parties have money riding on it. That is
 what validator consensus over live web data is for.
 
@@ -68,12 +68,12 @@ after the post goes up.
 
 A `web.render` exception produced a deterministic `exists:false` verdict that
 settled straight to `VERIFIED_FAIL`. The asymmetry gave it away: an unparseable
-*LLM verdict* failed closed and stayed retryable, but an unreachable *page* was
+_LLM verdict_ failed closed and stayed retryable, but an unreachable _page_ was
 terminal — and platforms rate-limit datacenter IPs constantly.
 
 The deterministic verdict now carries `fetch_failed`, threaded through consensus
-(the equivalence principle compares it), which distinguishes *"we could not
-look"* from *"we looked and the post is gone"*. An unreachable reading must
+(the equivalence principle compares it), which distinguishes _"we could not
+look"_ from _"we looked and the post is gone"_. An unreachable reading must
 persist for an hour before it settles. A page that loads and shows a deletion
 notice still settles immediately — the product requirement is intact, with a
 test pinning it.
@@ -91,7 +91,7 @@ test pinning it.
   though `recheck_post` did, despite both spending a live fetch plus an LLM
   consensus round.
 - **Anti-spam escrow floor** (`MIN_ESCROW`, 0.01 GEN). `create_deal` appends to
-  the *influencer's* index and anyone can name anyone, so dust deals could bury
+  the _influencer's_ index and anyone can name anyone, so dust deals could bury
   a stranger's dashboard.
 - Stale verdicts no longer survive a resubmission; view methods revert cleanly
   on a malformed address.
@@ -107,16 +107,16 @@ node packages/contracts/scripts/verify-fixes.mjs   # security fixes, on-chain
 
 Current results:
 
-| Gate | Result |
-| --- | --- |
-| Contract suite (offline GenVM stub) | 123 passed |
-| Frontend suite (vitest + jsdom) | 157 passed |
-| GenVM lint / validate | passed — 10 methods, 4 view / 6 write |
-| Smoke test vs deployed contract | 26 passed, 0 failed |
-| Security-fix verification, on-chain | 15 passed, 0 failed |
-| Production build | clean |
+| Gate                                | Result                                |
+| ----------------------------------- | ------------------------------------- |
+| Contract suite (offline GenVM stub) | 123 passed                            |
+| Frontend suite (vitest + jsdom)     | 157 passed                            |
+| GenVM lint / validate               | passed — 10 methods, 4 view / 6 write |
+| Smoke test vs deployed contract     | 26 passed, 0 failed                   |
+| Security-fix verification, on-chain | 15 passed, 0 failed                   |
+| Production build                    | clean                                 |
 
-Deployed (studionet): `0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85`
+Deployed (studionet): `0x8D656B0D19034fC781BC6AC3691430F38353C2BD`
 
 The contract suite runs `hypebond.py` in plain CPython against a stub of the
 GenVM runtime, so it needs no node and no deploy. The stub models storage as

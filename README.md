@@ -75,17 +75,17 @@ node packages/contracts/scripts/verify-fixes.mjs   # security fixes, on-chain
 ### Last full run
 
 All eight gates green on **2026-08-01** against
-`0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85` (studionet):
+`0x8D656B0D19034fC781BC6AC3691430F38353C2BD` (studionet):
 
-| Gate | Result |
-| --- | --- |
-| `pnpm lint:genvm` | passed — 12 methods, 4 view / 8 write |
-| `pnpm test:contract` | 145 passed |
-| `pnpm typecheck` | clean |
-| `pnpm test:web` | 177 passed, 14 files |
-| `pnpm build` | clean |
-| `pnpm verify` | exit 0 |
-| `pnpm test:smoke` (deployed) | ⚠ not re-run since the escrow-fairness changes |
+| Gate                          | Result                                         |
+| ----------------------------- | ---------------------------------------------- |
+| `pnpm lint:genvm`             | passed — 12 methods, 4 view / 8 write          |
+| `pnpm test:contract`          | 145 passed                                     |
+| `pnpm typecheck`              | clean                                          |
+| `pnpm test:web`               | 177 passed, 14 files                           |
+| `pnpm build`                  | clean                                          |
+| `pnpm verify`                 | exit 0                                         |
+| `pnpm test:smoke` (deployed)  | ⚠ not re-run since the escrow-fairness changes |
 | `verify-fixes.mjs` (deployed) | ⚠ not re-run since the escrow-fairness changes |
 
 > **Redeploy required.** `0xd557…cA85` predates the cancel-notice expiry, the
@@ -128,7 +128,7 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 ## Security model (contract)
 
 - **Checks-effects-interactions everywhere**: terminal status + `settled`
-  flag are written *before* any transfer; every money-moving path reverts
+  flag are written _before_ any transfer; every money-moving path reverts
   if `settled` is already true — no double payouts.
 - **Fail closed**: if validators can't agree on parseable verdict JSON the
   deal status doesn't change and an event fires; `recheck_post` /
@@ -145,17 +145,17 @@ studionet — it needs a running GenLayer Studio and a deployed address.
   the attack open. Zero-width and bidi characters are stripped first so a
   run cannot be hidden from the scanner while the model still sees it.
 - **Neither party can take the other's work.** The influencer must publish
-  publicly *before* they can submit the URL, so `cancel_deal` runs on a 24h
+  publicly _before_ they can submit the URL, so `cancel_deal` runs on a 24h
   public notice and a submission during it voids the cancellation — the
   brand cannot watch the post go up and pull the escrow. The matured notice
   also **expires** 24h later, because a notice that stayed valid for the rest
   of the deal would leave the brand holding exactly that standing option.
   Symmetrically, a page that cannot be **fetched** is not acted on until it
-  has read unreachable for an hour — at *either* check, so a rate-limit can
+  has read unreachable for an hour — at _either_ check, so a rate-limit can
   neither refund the brand out from under a live post nor burn the creator's
   once-only grace window.
 - **A timeout is never a substitute for a verdict nobody asked for.** The
-  `VERIFYING` timeout also requires that a `finalize` was *attempted* after
+  `VERIFYING` timeout also requires that a `finalize` was _attempted_ after
   the live window and failed. Otherwise a silent brand could reclaim the
   escrow from a post that was live and passing for the full 14 days.
 - **The named creator can say no.** Anyone can address a bond to any wallet,
@@ -180,7 +180,7 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 - [x] Finalize pays creator on pass / refunds brand on fail; second settlement attempts revert via `settled`.
 - [x] Cancel only pre-submission, and only after a 24h public notice the creator can override by submitting; the matured notice expires 24h later rather than becoming a standing option; timeout claims only after the 14-day / 48-hour windows.
 - [x] Creator can decline a bond they never agreed to, and clear settled bonds off their own dashboard.
-- [x] A post that cannot be fetched is retried, not settled — only a *confirmed* disappearance refunds the brand, and only a *confirmed* one opens the grace period.
+- [x] A post that cannot be fetched is retried, not settled — only a _confirmed_ disappearance refunds the brand, and only a _confirmed_ one opens the grace period.
 - [x] The `VERIFYING` timeout requires a failed finalize attempt, so a silent brand cannot reclaim a passing post.
 - [x] Verification prompt delimits untrusted content with injection-resistance instructions; JSON parse failure never pays out (fail closed).
 - [x] Boot loader tied to real readiness (fonts + paint), split-panel exit; route transitions < 650ms; seal slam + confetti on PASS.
