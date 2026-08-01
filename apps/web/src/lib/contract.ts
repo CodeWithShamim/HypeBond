@@ -175,8 +175,12 @@ export const writes = {
     write(w, "finalize", [dealId]),
   cancelDeal: (w: WriteOptions, dealId: number) =>
     write(w, "cancel_deal", [dealId]),
+  declineDeal: (w: WriteOptions, dealId: number) =>
+    write(w, "decline_deal", [dealId]),
   claimTimeout: (w: WriteOptions, dealId: number) =>
     write(w, "claim_timeout", [dealId]),
+  pruneDeals: (w: WriteOptions, maxSteps: number) =>
+    write(w, "prune_deals", [maxSteps]),
 };
 
 /**

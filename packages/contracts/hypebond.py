@@ -14,11 +14,12 @@ LIFECYCLE
     create_deal (payable)          -> FUNDED
     submit_post + initial AI check -> VERIFYING     (content OK, wait out live window)
                                    -> GRACE_PERIOD  (content fails, 48h to fix/repost)
-                                   -> SUBMITTED     (check errored; recheck_post retries)
+                                   -> SUBMITTED     (check errored/unreachable; retryable)
     finalize (after verify_after)  -> PAID          (pass: escrow -> influencer)
                                    -> VERIFIED_FAIL (fail: escrow -> brand)
-    cancel_deal (brand, pre-post)  -> notice opened, then CANCELLED after 24h
-    claim_timeout (brand)          -> REFUNDED      (escrow -> brand)
+    cancel_deal (brand, pre-post)  -> notice opened, then CANCELLED in a 24h window
+    decline_deal (influencer)      -> DECLINED      (escrow -> brand, immediately)
+    claim_timeout (anyone)         -> REFUNDED      (escrow -> brand)
 
 SECURITY INVARIANTS
 - Checks-effects-interactions: `settled = True` and the terminal status are
@@ -27,10 +28,23 @@ SECURITY INVARIANTS
   emits VerificationErrored — it never pays out and never refunds. A payout
   additionally requires a NON-EMPTY check list, so a verdict that verified
   nothing can never release the escrow.
-- NO STATE LOCKS THE ESCROW FOREVER. Every non-terminal status has a brand
-  timeout claim, and `grace_until` is set once so a failing influencer cannot
-  extend it by resubmitting. Retry paths (`recheck_post`, `finalize`) stay
-  open to anyone for the full STALE_WINDOW before a timeout unlocks.
+- NO STATE LOCKS THE ESCROW FOREVER. Every non-terminal status has a timeout
+  claim that ANYONE may trigger (the escrow always returns to the brand, so
+  there is nothing to steal by calling it — but the brand's liveness is not a
+  precondition for closing a dead deal). `grace_until` is set once and the
+  stale clock is anchored to the FIRST submission, so a failing influencer
+  cannot extend either by resubmitting. Retry paths (`recheck_post`,
+  `finalize`) stay open to anyone for the full STALE_WINDOW before a timeout
+  unlocks.
+- A TIMEOUT NEVER SUBSTITUTES FOR A VERDICT THAT WAS NEVER ASKED FOR. The
+  VERIFYING timeout additionally requires that a finalize was ATTEMPTED after
+  the live window and failed to settle. Without that, a brand could sit
+  silently for STALE_WINDOW and reclaim the escrow from a post that was live
+  and passing the whole time, purely because nobody called `finalize`.
+- MONEY IS PUSHED, NEVER CLAIMED. `emit_transfer` is emitted to consensus at
+  finalization, so every settlement moves the escrow in the same transaction
+  that writes the terminal status. There is no withdrawable-balance ledger
+  and no second step: `PAID` means the influencer has been paid.
 - Every untrusted string reaching the judging prompt is constrained: the post
   URL to a strict character allowlist, the fetched page to marker-neutralized
   text, and the deal terms to marker-free content. Neither party can close
@@ -44,10 +58,18 @@ SECURITY INVARIANTS
 - NEITHER PARTY CAN TAKE THE OTHER'S WORK. The influencer must publish before
   they can submit, so `cancel_deal` runs on a 24h public notice and a
   submission during it voids the cancellation — the brand cannot watch the
-  post go up and pull the escrow. Symmetrically, an unreachable page is not
-  accepted as a deleted post until it has read unreachable for
-  UNREACHABLE_CONFIRM, so a platform rate-limit cannot refund the brand out
-  from under a post that is genuinely live.
+  post go up and pull the escrow. The notice also EXPIRES: it is exercisable
+  only inside CANCEL_WINDOW, because a notice that matured and then stayed
+  valid forever would hand the brand exactly the standing instant-cancel
+  power the notice exists to deny. Symmetrically, an unreachable page is not
+  accepted as a deleted post — at EITHER check — until it has read
+  unreachable for UNREACHABLE_CONFIRM, so a platform rate-limit can neither
+  refund the brand out from under a live post nor burn the influencer's one
+  grace period.
+- THE INFLUENCER CAN SAY NO. `create_deal` names an influencer who never
+  agreed to anything, so `decline_deal` lets them refuse: the brand is
+  refunded immediately and the deal leaves their dashboard. This is also
+  what makes MIN_ESCROW spam self-cleaning — see the note there.
 - No unbounded loops in public methods: per-user index arrays + paged views.
 - All timestamps come from the block context, never from user input.
 """
@@ -69,6 +91,7 @@ PAID = "PAID"
 VERIFIED_FAIL = "VERIFIED_FAIL"  # failed final verification, brand refunded
 REFUNDED = "REFUNDED"  # brand reclaimed via timeout
 CANCELLED = "CANCELLED"
+DECLINED = "DECLINED"  # influencer refused the deal, brand refunded
 
 SECONDS_PER_DAY = 86400
 SUBMIT_WINDOW = 14 * SECONDS_PER_DAY  # brand timeout if no post submitted
@@ -86,23 +109,46 @@ RECHECK_COOLDOWN = 300  # min seconds between AI re-checks (anti-spam)
 # public notice window, during which the influencer can still submit.
 CANCEL_NOTICE = 24 * 3600
 
+# ...and the matured notice EXPIRES after this long. Without an expiry the
+# notice defends only its own first 24 hours: a brand could open one on day 0
+# against a deal that runs for 14, let it mature, and then hold a STANDING
+# instant-cancel option — able to watch the post go live and complete the
+# cancellation in the gap before `submit_post` lands, which is precisely the
+# attack CANCEL_NOTICE exists to prevent. Past this window the next
+# `cancel_deal` call re-opens a fresh, publicly visible notice instead of
+# settling, so the brand's option is never both silent and immediate.
+CANCEL_WINDOW = 24 * 3600
+
 # A page that cannot be fetched is NOT proof of a deleted post: platforms
-# rate-limit and validators share egress addresses. Final verification must
-# see the post unreachable for this long before it treats it as gone and
-# moves the escrow.
+# rate-limit and validators share egress addresses. BOTH checks must see the
+# post unreachable for this long before acting on it — the final check before
+# it treats the post as gone and moves the escrow, the initial check before it
+# spends the influencer's single, never-extended grace period on what may have
+# been a transient outage.
 UNREACHABLE_CONFIRM = 3600
 
 # Anti-spam floor on the escrow. `create_deal` appends to the INFLUENCER's
-# index, and anyone can name anyone — so without a floor an attacker fills a
-# stranger's dashboard with dust deals they cannot prune. The escrow is
-# refundable, so this is not a fee: it is a CAPITAL requirement. Filling 2000
-# slots ties up 20 GEN until the spammer cancels (24h notice) or times out
-# (14 days). It raises the bar rather than closing the hole — the structural
-# fix is a bounded / opt-in index, which is a storage-layout change.
+# index, and anyone can name anyone, so a floor is what stops an attacker
+# filling a stranger's dashboard with dust deals. The escrow is refundable, so
+# this is not a fee: it is a CAPITAL requirement. Filling 2000 slots ties up
+# 20 GEN.
+#
+# The floor alone only raises the bar; what closes the hole is that the victim
+# can now CLEAR the spam without waiting for the spammer. `decline_deal`
+# settles a FUNDED deal instantly (refunding the spammer, which is the point —
+# they get their capital back only by having their spam deleted), and
+# `prune_deals` compacts the settled ids out of the index in bounded batches.
+# So the cost asymmetry runs the right way: the attacker pays capital plus gas
+# per deal, the victim pays one bounded prune per PRUNE_MAX_STEPS deals.
 #
 # 0.01 GEN is far below any realistic sponsorship and far above dust.
 GEN = 10**18  # native token, 18 decimals
 MIN_ESCROW = GEN // 100  # 0.01 GEN
+
+# Ceiling on the index entries one `prune_deals` call may walk. Public methods
+# must not contain an unbounded loop, and the caller picks the batch size, so
+# this only caps how much work a single transaction can be asked to do.
+PRUNE_MAX_STEPS = 200
 
 MAX_PAGE_CHARS = 6000  # cap of fetched post text fed to the judge
 MAX_URL_CHARS = 500
@@ -187,6 +233,11 @@ class Deal:
 	min_live_days: u8  # how long the post must stay live
 	created_at: u256
 	submitted_at: u256  # block timestamp of the latest URL submission
+	# Timestamp of the FIRST submission — set once, never moved. The stale
+	# timeout is anchored here rather than to `submitted_at` so that
+	# resubmitting during the grace period cannot push the brand's reclaim out
+	# by another STALE_WINDOW each time, the same way `grace_until` is set once.
+	first_submitted_at: u256
 	verify_after: u256  # timestamp when final verification is allowed
 	grace_until: u256  # resubmission deadline — set ONCE, never extended
 	last_check_at: u256  # last AI check attempt, for the recheck cooldown
@@ -239,6 +290,18 @@ class CancelRequested(gl.Event):
 
 class DealCancelled(gl.Event):
 	def __init__(self, deal_id: u256, /): ...
+
+
+class DealDeclined(gl.Event):
+	"""Influencer refused a deal they never agreed to — brand refunded."""
+
+	def __init__(self, deal_id: u256, /): ...
+
+
+class IndexPruned(gl.Event):
+	"""Caller compacted settled deals out of one of their own indexes."""
+
+	def __init__(self, owner: Address, /, **blob): ...
 
 
 class PostUnreachable(gl.Event):
@@ -477,6 +540,7 @@ class HypeBond(gl.Contract):
 			min_live_days=u8(days),
 			created_at=u256(self._now()),
 			submitted_at=u256(0),
+			first_submitted_at=u256(0),
 			verify_after=u256(0),
 			grace_until=u256(0),
 			last_check_at=u256(0),
@@ -513,8 +577,17 @@ class HypeBond(gl.Contract):
 		now = self._now()
 		d.post_url = post_url
 		d.submitted_at = u256(now)
+		# Set ONCE, for the same reason `grace_until` is. The SUBMITTED stale
+		# timeout counts from here, so an influencer whose resubmission lands a
+		# check that errors cannot buy the deal another full STALE_WINDOW of
+		# locked escrow by resubmitting again.
+		if int(d.first_submitted_at) == 0:
+			d.first_submitted_at = u256(now)
 		d.verify_after = u256(now + int(d.min_live_days) * SECONDS_PER_DAY)
 		d.status = SUBMITTED
+		# A fresh submission is a fresh page: any unreachability confirmed
+		# against the PREVIOUS URL says nothing about this one.
+		d.unreachable_since = u256(0)
 		# Clear the previous attempt's verdict. Otherwise a resubmission shows
 		# the OLD failure reason and checklist while the new check is still
 		# running — the influencer appears to have failed a check that has not
@@ -580,6 +653,15 @@ class HypeBond(gl.Contract):
 		out of FUNDED, which voids the cancellation permanently. The brand can
 		still walk away from a deal nobody engaged with; they just cannot do it
 		in the seconds after the post goes up.
+
+		AND THE MATURED NOTICE EXPIRES. A notice that stayed valid for the rest
+		of the deal would defend only its own first 24 hours: open one on day 0
+		of a 14-day deal, let it mature, and the brand holds a standing option
+		to cancel the instant they see the post appear — the original attack,
+		with one day of setup. Completion is therefore only possible inside
+		CANCEL_WINDOW; a call after that re-opens a fresh notice instead of
+		settling, so exercising the option always costs another public 24h in
+		which the influencer can submit.
 		"""
 		d = self._deal_or_revert(int(deal_id))
 		self._require_unsettled(d)
@@ -589,13 +671,18 @@ class HypeBond(gl.Contract):
 			raise gl.vm.UserError("deal can only be cancelled before a post is submitted")
 
 		now = self._now()
-		if int(d.cancel_requested_at) == 0:
+		requested = int(d.cancel_requested_at)
+		# No notice yet, or the last one matured and went stale — either way the
+		# brand does not get to settle on this call, only to start the clock.
+		if requested == 0 or now >= requested + CANCEL_NOTICE + CANCEL_WINDOW:
 			d.cancel_requested_at = u256(now)
 			CancelRequested(
-				u256(int(deal_id)), effective_at=now + CANCEL_NOTICE
+				u256(int(deal_id)),
+				effective_at=now + CANCEL_NOTICE,
+				expires_at=now + CANCEL_NOTICE + CANCEL_WINDOW,
 			).emit()
 			return
-		if now < int(d.cancel_requested_at) + CANCEL_NOTICE:
+		if now < requested + CANCEL_NOTICE:
 			raise gl.vm.UserError("cancellation notice has not elapsed yet")
 
 		# Effects before interaction.
@@ -605,15 +692,46 @@ class HypeBond(gl.Contract):
 		DealCancelled(u256(int(deal_id))).emit()
 
 	@gl.public.write
-	def claim_timeout(self, deal_id: u256) -> None:
-		"""Brand reclaims escrow after a lapsed window:
-		- FUNDED and 14 days passed with no submission, or
-		- GRACE_PERIOD and the 48h fix window passed with no resubmission.
+	def decline_deal(self, deal_id: u256) -> None:
+		"""Influencer refuses a deal, refunding the brand immediately.
+
+		`create_deal` names an influencer who never agreed to anything — anyone
+		can address a deal to anyone. Without this the named party's only
+		options are to perform the work or to sit on a deal they never wanted
+		until it times out, and their dashboard fills with whatever strangers
+		put there.
+
+		No notice window is needed here, because the asymmetry that makes
+		`cancel_deal` dangerous does not exist in this direction: the influencer
+		is refusing BEFORE doing any work, so there is nothing of theirs to
+		take. The brand gets the full escrow back on the spot.
 		"""
 		d = self._deal_or_revert(int(deal_id))
 		self._require_unsettled(d)
-		if gl.message.sender_address != d.brand:
-			raise gl.vm.UserError("only the brand can claim a timeout")
+		if gl.message.sender_address != d.influencer:
+			raise gl.vm.UserError("only the deal's influencer can decline")
+		if d.status != FUNDED:
+			raise gl.vm.UserError("deal can only be declined before a post is submitted")
+
+		# Effects before interaction.
+		d.settled = True
+		d.status = DECLINED
+		d.verdict_reason = "The creator declined this deal; escrow returned to the brand."
+		gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
+		DealDeclined(u256(int(deal_id))).emit()
+		DealRefunded(u256(int(deal_id)), kind="declined").emit()
+
+	@gl.public.write
+	def claim_timeout(self, deal_id: u256) -> None:
+		"""Reclaim the escrow for the brand after a lapsed window.
+
+		CALLABLE BY ANYONE. The payee is fixed — the escrow returns to
+		`d.brand` no matter who calls — so there is nothing to steal by
+		calling it, and making it brand-only would mean an unresponsive brand
+		leaves a dead deal sitting in a live status forever.
+		"""
+		d = self._deal_or_revert(int(deal_id))
+		self._require_unsettled(d)
 		now = self._now()
 		if d.status == FUNDED:
 			if now < int(d.created_at) + SUBMIT_WINDOW:
@@ -626,7 +744,8 @@ class HypeBond(gl.Contract):
 		elif d.status == SUBMITTED:
 			# Initial check never produced a usable verdict. `recheck_post` is
 			# open to anyone for the whole stale window before this unlocks.
-			if now < int(d.submitted_at) + STALE_WINDOW:
+			# Anchored to the FIRST submission so resubmitting cannot extend it.
+			if now < int(d.first_submitted_at) + STALE_WINDOW:
 				raise gl.vm.UserError("initial check is still retryable")
 			reason = "The initial check never reached a verdict within 14 days; escrow reclaimed by the brand."
 		elif d.status == VERIFYING:
@@ -635,6 +754,20 @@ class HypeBond(gl.Contract):
 			# a full 14 days to get a successful settlement through.
 			if now < int(d.verify_after) + STALE_WINDOW:
 				raise gl.vm.UserError("final verification is still available")
+			# ...but a timeout is an escape hatch for verification that FAILED,
+			# not a substitute for verification nobody asked for. VERIFYING on
+			# its own proves only that the initial check passed; unlike
+			# SUBMITTED, it carries no evidence that anything went wrong since.
+			# Without this, a brand could stay silent for the whole window and
+			# reclaim the escrow from a post that was live and passing all
+			# along, just because no one called `finalize`. `last_check_at`
+			# moves on every attempt, so requiring it to be at or past
+			# `verify_after` means "a finalize was tried after the live window
+			# and did not settle" — and the brand can make that attempt itself.
+			if int(d.last_check_at) < int(d.verify_after):
+				raise gl.vm.UserError(
+					"finalize has not been attempted since the live window ended"
+				)
 			reason = "Final verification never reached a verdict within 14 days of the live window; escrow reclaimed by the brand."
 		else:
 			raise gl.vm.UserError("deal is not in a timeout-claimable state")
@@ -644,6 +777,73 @@ class HypeBond(gl.Contract):
 		d.verdict_reason = reason
 		gl.get_contract_at(d.brand).emit_transfer(value=u256(int(d.amount)))
 		DealRefunded(u256(int(deal_id)), kind="timeout").emit()
+
+	@gl.public.write
+	def prune_deals(self, max_steps: u256) -> u256:
+		"""Compact SETTLED deals out of the caller's own two indexes.
+
+		The cleanup half of the spam defence. `create_deal` appends to the
+		named influencer's index whether they asked for it or not, so the
+		named party needs a way to get their dashboard back that does not
+		depend on the spammer doing anything. Pair it with `decline_deal`:
+		decline settles the deal, this removes it from the list.
+
+		Touches ONLY `gl.message.sender_address`'s own index entries, and only
+		entries whose deal is already settled — a live deal cannot be hidden
+		from either party, and no one can prune anyone else's view.
+
+		The loop is bounded by the caller's `max_steps` (itself capped at
+		PRUNE_MAX_STEPS), so a public method never walks an array whose length
+		an attacker chose. Returns how many entries were removed; call again to
+		continue where a batch left off.
+		"""
+		steps = int(max_steps)
+		if steps <= 0:
+			raise gl.vm.UserError("max_steps must be positive")
+		steps = min(steps, PRUNE_MAX_STEPS)
+		owner = gl.message.sender_address
+		removed, used = self._prune_index(self.brand_deals.get(owner), steps)
+		# Spend whatever the batch has LEFT on the influencer index — that is
+		# the one a stranger can append to, so it is the one that needs to
+		# drain fastest. Budgeting on steps used rather than entries removed is
+		# what keeps the true ceiling at PRUNE_MAX_STEPS: an index full of live
+		# deals removes nothing while still costing a walk.
+		more, _ = self._prune_index(self.influencer_deals.get(owner), steps - used)
+		removed += more
+		if removed > 0:
+			IndexPruned(owner, removed=removed).emit()
+		return u256(removed)
+
+	def _prune_index(self, ids: typing.Any, steps: int) -> tuple[int, int]:
+		"""Swap-remove every settled entry the step budget reaches.
+
+		Returns (removed, steps_used).
+
+		Swap-remove (overwrite with the tail, then pop) keeps this O(1) per
+		removal, at the cost of the index no longer being in creation order.
+		Callers page over it and sort by id, so ordering is not load-bearing.
+		"""
+		if ids is None or steps <= 0:
+			return (0, 0)
+		removed = 0
+		i = 0
+		used = 0
+		n = len(ids)
+		while i < n and used < steps:
+			used += 1
+			d = self.deals.get(ids[i])
+			if d is not None and not d.settled:
+				i += 1
+				continue
+			# A missing deal is unreachable garbage; a settled one is history
+			# that stays readable by id. Either way it leaves the index.
+			ids[i] = ids[n - 1]
+			ids.pop()
+			n -= 1
+			removed += 1
+			# `i` deliberately does not advance: the entry just swapped into
+			# this slot has not been inspected yet.
+		return (removed, used)
 
 	# ------------------------------------------------------------ verification
 
@@ -664,24 +864,35 @@ class HypeBond(gl.Contract):
 		d.checks_passed = checks_json
 		now = self._now()
 
+		# "We could not look" is not "the post is gone". Platforms rate-limit
+		# and validators share egress addresses, so one unreachable reading is
+		# never acted on by itself — at EITHER check.
+		#
+		# At the final check acting early would be terminal: it hands the
+		# escrow to the brand for an outage the influencer did not cause.
+		# At the initial check it is not terminal but it is still one-way,
+		# because entering GRACE_PERIOD burns `grace_until` — which is set once
+		# and never extended — so a transient outage would silently spend the
+		# influencer's entire 48h fix window on a post that was live the whole
+		# time. Requiring the condition to persist costs a retry either way.
+		if fetch_failed:
+			if int(d.unreachable_since) == 0:
+				d.unreachable_since = u256(now)
+			if now < int(d.unreachable_since) + UNREACHABLE_CONFIRM:
+				# Status is left as-is: VERIFYING stays finalizable and
+				# SUBMITTED stays rechargeable via `recheck_post`, both of
+				# which are open to anyone on a cooldown far shorter than
+				# UNREACHABLE_CONFIRM. Neither can strand the escrow — the
+				# stale timeout still backstops both.
+				PostUnreachable(
+					u256(int(d.id)), since=int(d.unreachable_since), final=final
+				).emit()
+				return
+		else:
+			# Reachable again — a later outage starts a fresh window.
+			d.unreachable_since = u256(0)
+
 		if final:
-			if fetch_failed:
-				# "We could not look" is not "the post is gone". Platforms
-				# rate-limit and validators share egress addresses, so a
-				# single unreachable reading would hand the escrow to the
-				# brand for an outage the influencer did not cause — and it
-				# would be TERMINAL, unlike every other inconclusive result
-				# here. Require the condition to persist before settling.
-				if int(d.unreachable_since) == 0:
-					d.unreachable_since = u256(now)
-				if now < int(d.unreachable_since) + UNREACHABLE_CONFIRM:
-					PostUnreachable(
-						u256(int(d.id)), since=int(d.unreachable_since)
-					).emit()
-					return
-			else:
-				# Reachable again — a later outage starts a fresh window.
-				d.unreachable_since = u256(0)
 			# Terminal settlement: effects fully applied before any transfer.
 			d.settled = True
 			if passed:
@@ -968,6 +1179,7 @@ only if both contain an "error" key."""
 			"min_live_days": int(d.min_live_days),
 			"created_at": int(d.created_at),
 			"submitted_at": int(d.submitted_at),
+			"first_submitted_at": int(d.first_submitted_at),
 			"verify_after": int(d.verify_after),
 			"grace_until": int(d.grace_until),
 			"last_check_at": int(d.last_check_at),

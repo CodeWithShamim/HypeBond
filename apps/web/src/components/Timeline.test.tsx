@@ -14,6 +14,7 @@ const BASE: Deal = {
   min_live_days: 3,
   created_at: 1_700_000_000,
   submitted_at: 0,
+  first_submitted_at: 0,
   verify_after: 0,
   grace_until: 0,
   last_check_at: 0,
@@ -102,16 +103,24 @@ describe("timelineNodes", () => {
   });
 
   it("renames the payout node on every refund path", () => {
-    for (const status of ["VERIFIED_FAIL", "REFUNDED", "CANCELLED"] as const) {
+    for (const status of [
+      "VERIFIED_FAIL",
+      "REFUNDED",
+      "CANCELLED",
+      "DECLINED",
+    ] as const) {
       const nodes = timelineNodes(dealAt(status));
       expect(nodes[5].label, status).toBe("Refunded");
       expect(nodes[5].state, status).toBe("fail");
     }
   });
 
-  it("distinguishes a brand cancellation from a timeout reclaim", () => {
+  it("distinguishes the three ways a bond closes without a verdict", () => {
+    // All three return the escrow to the brand, but who ended it differs and
+    // the timeline is the only place that says so.
     expect(timelineNodes(dealAt("CANCELLED"))[5].detail).toMatch(/cancelled by brand/i);
-    expect(timelineNodes(dealAt("REFUNDED"))[5].detail).toMatch(/reclaimed by brand/i);
+    expect(timelineNodes(dealAt("REFUNDED"))[5].detail).toMatch(/reclaimed for brand/i);
+    expect(timelineNodes(dealAt("DECLINED"))[5].detail).toMatch(/declined by creator/i);
   });
 
   it("shows the configured window before a post lands and the real one after", () => {

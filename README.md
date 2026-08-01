@@ -79,14 +79,20 @@ All eight gates green on **2026-08-01** against
 
 | Gate | Result |
 | --- | --- |
-| `pnpm lint:genvm` | passed — 10 methods, 4 view / 6 write |
-| `pnpm test:contract` | 124 passed |
+| `pnpm lint:genvm` | passed — 12 methods, 4 view / 8 write |
+| `pnpm test:contract` | 145 passed |
 | `pnpm typecheck` | clean |
-| `pnpm test:web` | 157 passed, 13 files |
+| `pnpm test:web` | 177 passed, 14 files |
 | `pnpm build` | clean |
 | `pnpm verify` | exit 0 |
-| `pnpm test:smoke` (deployed) | 26 passed, 0 failed |
-| `verify-fixes.mjs` (deployed) | 15 passed, 0 failed |
+| `pnpm test:smoke` (deployed) | ⚠ not re-run since the escrow-fairness changes |
+| `verify-fixes.mjs` (deployed) | ⚠ not re-run since the escrow-fairness changes |
+
+> **Redeploy required.** `0xd557…cA85` predates the cancel-notice expiry, the
+> `VERIFYING` finalize-attempt guard, the initial-check unreachable confirm,
+> `decline_deal` and `prune_deals`. The storage layout changed too
+> (`first_submitted_at`), so this is a fresh deploy, not an upgrade. Redeploy
+> and re-run both on-chain gates before treating the numbers above as current.
 
 The last two run against the **deployed** contract rather than the stub. That
 distinction matters: the stub is a test double, so passing there does not prove
@@ -141,10 +147,24 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 - **Neither party can take the other's work.** The influencer must publish
   publicly *before* they can submit the URL, so `cancel_deal` runs on a 24h
   public notice and a submission during it voids the cancellation — the
-  brand cannot watch the post go up and pull the escrow. Symmetrically, a
-  page that cannot be **fetched** is not accepted as a deleted post until it
-  has read unreachable for an hour, so a platform rate-limit cannot refund
-  the brand out from under a post that is genuinely live.
+  brand cannot watch the post go up and pull the escrow. The matured notice
+  also **expires** 24h later, because a notice that stayed valid for the rest
+  of the deal would leave the brand holding exactly that standing option.
+  Symmetrically, a page that cannot be **fetched** is not acted on until it
+  has read unreachable for an hour — at *either* check, so a rate-limit can
+  neither refund the brand out from under a live post nor burn the creator's
+  once-only grace window.
+- **A timeout is never a substitute for a verdict nobody asked for.** The
+  `VERIFYING` timeout also requires that a `finalize` was *attempted* after
+  the live window and failed. Otherwise a silent brand could reclaim the
+  escrow from a post that was live and passing for the full 14 days.
+- **The named creator can say no.** Anyone can address a bond to any wallet,
+  so `decline_deal` refunds the brand on the spot and `prune_deals` clears
+  settled bonds out of the caller's own index in bounded batches — the spam
+  defence does not depend on the spammer cooperating.
+- **Money is pushed, never claimed.** Every settlement transfers the escrow in
+  the same transaction that writes the terminal status. There is no
+  withdrawable-balance ledger and no second step: `PAID` means paid.
 - **Metered AI spend**: `recheck_post` and `finalize` are both
   anyone-callable and both cost a live fetch plus an LLM consensus round,
   so they share one cooldown.
@@ -158,8 +178,10 @@ studionet — it needs a running GenLayer Studio and a deployed address.
 - [x] Influencer submits URL; wrong-platform URL rejected client-side (`isValidPostUrl`) and contract-side (`_check_post_url`).
 - [x] Initial check failure → GRACE_PERIOD with the AI's reason shown loud; resubmission works within 48h.
 - [x] Finalize pays creator on pass / refunds brand on fail; second settlement attempts revert via `settled`.
-- [x] Cancel only pre-submission, and only after a 24h public notice the creator can override by submitting; timeout claims only after the 14-day / 48-hour windows.
-- [x] A post that cannot be fetched is retried, not settled — only a *confirmed* disappearance refunds the brand.
+- [x] Cancel only pre-submission, and only after a 24h public notice the creator can override by submitting; the matured notice expires 24h later rather than becoming a standing option; timeout claims only after the 14-day / 48-hour windows.
+- [x] Creator can decline a bond they never agreed to, and clear settled bonds off their own dashboard.
+- [x] A post that cannot be fetched is retried, not settled — only a *confirmed* disappearance refunds the brand, and only a *confirmed* one opens the grace period.
+- [x] The `VERIFYING` timeout requires a failed finalize attempt, so a silent brand cannot reclaim a passing post.
 - [x] Verification prompt delimits untrusted content with injection-resistance instructions; JSON parse failure never pays out (fail closed).
 - [x] Boot loader tied to real readiness (fonts + paint), split-panel exit; route transitions < 650ms; seal slam + confetti on PASS.
 - [x] `useReducedMotion` disables marquees/confetti/transitions everywhere; app fully usable without motion.

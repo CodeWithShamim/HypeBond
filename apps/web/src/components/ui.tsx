@@ -86,6 +86,7 @@ const CHIP_STYLES: Record<DealStatus, { bg: string; text: string; label: string 
   VERIFIED_FAIL: { bg: "bg-heat/15 border-heat", text: "text-heat", label: "Bond broken" },
   REFUNDED: { bg: "bg-static border-static", text: "text-bone/60", label: "Refunded" },
   CANCELLED: { bg: "bg-static border-static", text: "text-bone/60", label: "Cancelled" },
+  DECLINED: { bg: "bg-static border-static", text: "text-bone/60", label: "Declined" },
 };
 
 export function StatusChip({ status }: { status: DealStatus }) {

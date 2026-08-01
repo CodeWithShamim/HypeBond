@@ -64,13 +64,19 @@ export function PageFrame({ children }: { children: ReactNode }) {
         show: { transition: { staggerChildren: 0.06, delayChildren: 0.12 } },
       }}
     >
-      {/* gradient wipe sweeping across on entry */}
-      <motion.div
-        className="bg-bond pointer-events-none fixed inset-0 z-[80]"
-        initial={{ x: "-100%" }}
-        animate={{ x: "100%" }}
-        transition={{ duration: 0.42, ease: [0.76, 0, 0.24, 1] }}
-      />
+      {/* Gradient wipe sweeping across on entry. The clipping wrapper is load
+          bearing: the wipe finishes parked a full viewport to the right, and
+          `position: fixed` resolves against the nearest *transformed* ancestor
+          — which PageFrame becomes the moment it animates. Unwrapped, the
+          parked wipe then widens the document and opens a sideways scroll. */}
+      <div className="pointer-events-none fixed inset-0 z-[80] overflow-hidden">
+        <motion.div
+          className="bg-bond h-full w-full"
+          initial={{ x: "-100%" }}
+          animate={{ x: "100%" }}
+          transition={{ duration: 0.42, ease: [0.76, 0, 0.24, 1] }}
+        />
+      </div>
       <motion.div variants={pageItem}>{children}</motion.div>
     </motion.div>
   );

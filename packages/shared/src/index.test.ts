@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTerms,
+  cancelStep,
+  dealAttention,
   dealSerial,
   DEAL_STATUSES,
+  finalizeAttempted,
   isValidPostUrl,
   LIVE_STATUSES,
   parseDeal,
+  prunableCount,
   parseDealList,
   parseVerdict,
   PLATFORM_DOMAINS,
@@ -422,11 +426,39 @@ describe("termsProblem", () => {
 
 describe("staleDeadline", () => {
   const stale = 14 * 86400;
-  const base = { submitted_at: 1_000, verify_after: 5_000 } as Deal;
+  // `last_check_at >= verify_after` is the contract's proof that a finalize
+  // was attempted after the live window and failed to settle.
+  const base = {
+    submitted_at: 1_000,
+    first_submitted_at: 1_000,
+    verify_after: 5_000,
+    last_check_at: 5_000,
+  } as Deal;
 
   it("derives the stuck-check deadline per status", () => {
     expect(staleDeadline({ ...base, status: "SUBMITTED" })).toBe(1_000 + stale);
     expect(staleDeadline({ ...base, status: "VERIFYING" })).toBe(5_000 + stale);
+  });
+
+  it("anchors SUBMITTED to the FIRST submission, not the latest", () => {
+    // Resubmitting during grace moves `submitted_at`; anchoring there would
+    // let the influencer buy another stale window per resubmission.
+    const resubmitted = { ...base, status: "SUBMITTED", submitted_at: 90_000 } as Deal;
+    expect(staleDeadline(resubmitted)).toBe(1_000 + stale);
+  });
+
+  it("falls back to submitted_at for deals created before the anchor existed", () => {
+    const legacy = { ...base, status: "SUBMITTED", first_submitted_at: 0 } as Deal;
+    expect(staleDeadline(legacy)).toBe(1_000 + stale);
+  });
+
+  it("gives no VERIFYING deadline until a finalize has been attempted", () => {
+    // A pure clock here would let a silent brand reclaim the escrow from a
+    // post that was live and passing the whole time.
+    const untried = { ...base, status: "VERIFYING", last_check_at: 4_999 } as Deal;
+    expect(staleDeadline(untried)).toBeNull();
+    expect(finalizeAttempted(untried)).toBe(false);
+    expect(finalizeAttempted({ ...base, status: "VERIFYING" })).toBe(true);
   });
 
   it("returns null for statuses with no stale-timeout path", () => {
@@ -435,8 +467,108 @@ describe("staleDeadline", () => {
       "GRACE_PERIOD",
       "PAID",
       "CANCELLED",
+      "DECLINED",
     ] as const) {
       expect(staleDeadline({ ...base, status }), status).toBeNull();
     }
+  });
+});
+
+describe("cancelStep", () => {
+  const notice = 24 * 3600;
+  const base = { status: "FUNDED", cancel_requested_at: 0 } as Deal;
+
+  it("reports 'open' when no notice has been started", () => {
+    expect(cancelStep(base, 10_000)).toBe("open");
+  });
+
+  it("walks waiting -> ready -> restart as the clock advances", () => {
+    const d = { ...base, cancel_requested_at: 10_000 } as Deal;
+    expect(cancelStep(d, 10_000 + notice - 1)).toBe("waiting");
+    expect(cancelStep(d, 10_000 + notice)).toBe("ready");
+    expect(cancelStep(d, 10_000 + notice * 2 - 1)).toBe("ready");
+    // Past the window the contract re-opens a notice rather than settling, so
+    // a matured notice can never become a standing instant-cancel option.
+    expect(cancelStep(d, 10_000 + notice * 2)).toBe("restart");
+  });
+
+  it("treats a submitted deal as having no notice at all", () => {
+    const submitted = {
+      ...base,
+      status: "VERIFYING",
+      cancel_requested_at: 10_000,
+    } as Deal;
+    expect(cancelStep(submitted, 10_000 + notice)).toBe("open");
+  });
+});
+
+describe("dealAttention", () => {
+  const day = 86400;
+  const base = {
+    status: "VERIFYING",
+    created_at: 0,
+    submitted_at: 0,
+    first_submitted_at: 0,
+    verify_after: 10 * day,
+    grace_until: 0,
+    last_check_at: 0,
+    cancel_requested_at: 0,
+  } as Deal;
+
+  it("warns the creator that an unfinalized bond can be reclaimed", () => {
+    // The case that costs a creator real money for doing nothing: post is
+    // live, a finalize errored, and the brand's reclaim clock is running.
+    const d = { ...base, last_check_at: 10 * day } as Deal;
+    const todo = dealAttention(d, "influencer", 11 * day);
+    expect(todo?.urgent).toBe(true);
+    expect(todo?.label).toMatch(/brand can reclaim/i);
+  });
+
+  it("does not cry wolf before a finalize has failed", () => {
+    const todo = dealAttention(base, "influencer", 11 * day);
+    expect(todo?.urgent).toBe(false);
+    expect(todo?.label).toMatch(/finalize/i);
+  });
+
+  it("says nothing while the live window is still running", () => {
+    expect(dealAttention(base, "influencer", 5 * day)).toBeNull();
+    expect(dealAttention(base, "brand", 5 * day)).toBeNull();
+  });
+
+  it("tells a creator that submitting voids a pending cancellation", () => {
+    const d = {
+      ...base,
+      status: "FUNDED",
+      cancel_requested_at: 1 * day,
+    } as Deal;
+    const todo = dealAttention(d, "influencer", 1 * day + 3600);
+    expect(todo?.urgent).toBe(true);
+    expect(todo?.label).toMatch(/submit/i);
+  });
+
+  it("flags a lapsed grace window to the brand, not the creator", () => {
+    const d = { ...base, status: "GRACE_PERIOD", grace_until: 2 * day } as Deal;
+    expect(dealAttention(d, "influencer", 3 * day)).toBeNull();
+    expect(dealAttention(d, "brand", 3 * day)?.label).toMatch(/reclaim/i);
+  });
+
+  it("returns nothing for settled bonds", () => {
+    for (const status of ["PAID", "REFUNDED", "CANCELLED", "DECLINED"] as const) {
+      const d = { ...base, status } as Deal;
+      expect(dealAttention(d, "brand", 99 * day), status).toBeNull();
+      expect(dealAttention(d, "influencer", 99 * day), status).toBeNull();
+    }
+  });
+});
+
+describe("prunableCount", () => {
+  it("counts only settled bonds", () => {
+    const deals = [
+      { status: "FUNDED" },
+      { status: "DECLINED" },
+      { status: "PAID" },
+      { status: "VERIFYING" },
+    ] as Deal[];
+    expect(prunableCount(deals)).toBe(2);
   });
 });

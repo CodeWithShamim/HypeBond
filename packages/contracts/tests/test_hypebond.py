@@ -297,16 +297,46 @@ class TestSubmitPost(ChainTest):
 		self.assertEqual(self.c.host.transfers, [])
 
 	def test_unfetchable_post_fails_without_calling_the_model(self):
+		"""An unreachable page never reaches the model — and never settles on
+		the first reading either. Burning the once-only grace period on a
+		platform rate-limit is not recoverable, so it takes confirmation."""
 		self.c.program_fetch_failure()
 		self.c.call("submit_post", self.deal_id, POST_URL, sender=INFLUENCER)
-		self.assertEqual(self.c.status(self.deal_id), "GRACE_PERIOD")
+		self.assertEqual(
+			self.c.status(self.deal_id), "SUBMITTED", "one bad fetch must not burn grace"
+		)
 		self.assertEqual(self.c.host.prompts, [], "no model call for an unreachable page")
+		self.assertEqual(self.c.deal(self.deal_id)["grace_until"], 0)
+
+		self.c.warp(hypebond.UNREACHABLE_CONFIRM + 1)
+		self.c.call("recheck_post", self.deal_id, sender=STRANGER)
+		self.assertEqual(self.c.status(self.deal_id), "GRACE_PERIOD")
+		self.assertEqual(self.c.host.prompts, [])
 
 	def test_blank_page_fails_without_calling_the_model(self):
 		self.c.program_page("   \n\t  ", POST_URL)
 		self.c.call("submit_post", self.deal_id, POST_URL, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "SUBMITTED")
+		self.c.warp(hypebond.UNREACHABLE_CONFIRM + 1)
+		self.c.call("recheck_post", self.deal_id, sender=STRANGER)
 		self.assertEqual(self.c.status(self.deal_id), "GRACE_PERIOD")
 		self.assertEqual(self.c.host.prompts, [])
+
+	def test_a_recovered_page_never_reaches_the_grace_period(self):
+		"""The whole point of the confirm window: an outage that clears before
+		it elapses costs the influencer a retry, not their fix window."""
+		self.c.program_fetch_failure()
+		self.c.call("submit_post", self.deal_id, POST_URL, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "SUBMITTED")
+
+		self.c.warp(hypebond.RECHECK_COOLDOWN + 1)  # still inside the confirm window
+		self.c.clear_fetch_failure()
+		self.c.program_page("gm from @hypebond #ad", POST_URL)
+		self.c.program_verdict(overall=True)
+		self.c.call("recheck_post", self.deal_id, sender=STRANGER)
+		self.assertEqual(self.c.status(self.deal_id), "VERIFYING")
+		self.assertEqual(self.c.deal(self.deal_id)["grace_until"], 0, "grace never spent")
+		self.assertEqual(self.c.deal(self.deal_id)["unreachable_since"], 0, "window reset")
 
 	def test_cannot_submit_twice_from_verifying(self):
 		self.c.submit_passing_post(self.deal_id)
@@ -756,7 +786,9 @@ class TestFinalize(ChainTest):
 		for method, sender in [
 			("finalize", STRANGER),
 			("cancel_deal", BRAND),
+			("decline_deal", INFLUENCER),
 			("claim_timeout", BRAND),
+			("claim_timeout", STRANGER),
 		]:
 			with self.subTest(method=method):
 				with self.assertRaises(Revert):
@@ -799,6 +831,103 @@ class TestCancel(ChainTest):
 		self.assertEqual(self.c.balance(BRAND), 0, "refunded exactly once")
 		self.assertEqual(len(self.c.host.transfers), 1)
 
+	def test_a_matured_notice_goes_stale_instead_of_lasting_forever(self):
+		"""The notice must not become a STANDING instant-cancel option.
+
+		Left valid for the rest of the deal, a notice opened on day 0 and
+		matured on day 1 would let the brand watch the post go live on day 9
+		and cancel in the gap before `submit_post` lands — the precise race
+		CANCEL_NOTICE exists to prevent, bought with one day of setup.
+		"""
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		opened = self.c.deal(self.deal_id)["cancel_requested_at"]
+		self.c.warp(hypebond.CANCEL_NOTICE + hypebond.CANCEL_WINDOW + 1)
+
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		self.assertEqual(
+			self.c.status(self.deal_id), "FUNDED", "a stale notice must not settle"
+		)
+		self.assertEqual(self.c.host.transfers, [], "escrow untouched")
+		self.assertGreater(
+			self.c.deal(self.deal_id)["cancel_requested_at"],
+			opened,
+			"the call re-opens a fresh, publicly visible notice",
+		)
+		# ...and the influencer gets another full notice period to submit in.
+		with self.assertReverts("notice has not elapsed"):
+			self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+
+	def test_cancellation_completes_anywhere_inside_the_window(self):
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		self.c.warp(hypebond.CANCEL_NOTICE + hypebond.CANCEL_WINDOW - 60)
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		self.assertEqual(self.c.status(self.deal_id), "CANCELLED")
+		self.assertEqual(self.c.balance(BRAND), 0)
+
+	def test_submitting_during_a_matured_notice_still_voids_it(self):
+		"""The influencer's escape hatch has to survive the whole notice, not
+		just the part before it matures."""
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		self.c.warp(hypebond.CANCEL_NOTICE + 60)
+		self.c.submit_passing_post(self.deal_id)
+		self.assertEqual(self.c.status(self.deal_id), "VERIFYING")
+		with self.assertReverts("before a post is submitted"):
+			self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+
+
+# ---------------------------------------------------------------- declining
+
+
+class TestDeclineDeal(ChainTest):
+	"""`create_deal` names an influencer who never agreed to anything, so the
+	named party needs a way to refuse that does not cost them 14 days."""
+
+	def setUp(self) -> None:
+		super().setUp()
+		self.deal_id = self.c.create_deal(escrow=2 * GEN)
+
+	def test_influencer_refusal_refunds_the_brand_immediately(self):
+		self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+		d = self.c.deal(self.deal_id)
+		self.assertEqual(d["status"], "DECLINED")
+		self.assertTrue(d["settled"])
+		self.assertEqual(self.c.balance(BRAND), 0, "escrow returned in full")
+		self.assertEqual(self.c.host.contract_balance, 0)
+		self.assertIn("declined", d["verdict_reason"].lower())
+
+	def test_no_notice_window_is_needed_to_decline(self):
+		"""Unlike `cancel_deal`, there is nothing of the other party's to take:
+		the influencer is refusing BEFORE doing any work."""
+		self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "DECLINED")
+
+	def test_only_the_influencer_may_decline(self):
+		for sender in (BRAND, STRANGER):
+			with self.subTest(sender=sender.as_hex):
+				with self.assertReverts("only the deal's influencer can decline"):
+					self.c.call("decline_deal", self.deal_id, sender=sender)
+
+	def test_cannot_decline_after_posting(self):
+		"""Declining after the work is done would be the influencer's own
+		version of the cancel-after-post attack."""
+		self.c.submit_passing_post(self.deal_id)
+		with self.assertReverts("before a post is submitted"):
+			self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+
+	def test_cannot_decline_a_settled_deal(self):
+		self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+		with self.assertReverts("already settled"):
+			self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+		self.assertEqual(len(self.c.host.transfers), 1, "refunded exactly once")
+
+	def test_declining_beats_a_pending_cancellation_to_the_same_outcome(self):
+		self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+		self.c.call("decline_deal", self.deal_id, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "DECLINED")
+		self.assertEqual(self.c.balance(BRAND), 0)
+		with self.assertReverts("already settled"):
+			self.c.call("cancel_deal", self.deal_id, sender=BRAND)
+
 
 # ---------------------------------------------------------------- timeouts
 
@@ -822,12 +951,17 @@ class TestClaimTimeout(ChainTest):
 		self.assertEqual(self.c.balance(BRAND), 0)
 		self.assertIn("14 days", d["verdict_reason"])
 
-	def test_only_the_brand_can_claim(self):
+	def test_anyone_may_claim_but_only_the_brand_is_ever_paid(self):
+		"""The payee is fixed at `d.brand`, so opening the call up costs
+		nothing and stops an unresponsive brand parking a dead deal in a live
+		status forever."""
 		self.c.warp_days(14.1)
-		for sender in (INFLUENCER, STRANGER):
-			with self.subTest(sender=sender.as_hex):
-				with self.assertReverts("only the brand"):
-					self.c.call("claim_timeout", self.deal_id, sender=sender)
+		self.c.call("claim_timeout", self.deal_id, sender=STRANGER)
+		self.assertEqual(self.c.status(self.deal_id), "REFUNDED")
+		self.assertEqual(self.c.balance(STRANGER), 0, "caller is never the payee")
+		self.assertEqual(self.c.balance(INFLUENCER), 0)
+		self.assertEqual(self.c.balance(BRAND), 0, "escrow returned to the brand")
+		self.assertEqual(self.c.host.transfers[-1].to, BRAND)
 
 	def test_grace_period_timeout_refunds_after_48h(self):
 		self.c.program_page("bad post", POST_URL)
@@ -853,11 +987,83 @@ class TestClaimTimeout(ChainTest):
 		self.c.warp_days(3.1)  # live window over, finalize now open to anyone
 		with self.assertReverts("final verification is still available"):
 			self.c.call("claim_timeout", self.deal_id, sender=BRAND)
+		# A verdict was asked for and did not arrive — that is what the stale
+		# window is an escape hatch FROM.
+		self.c.program_consensus_failure()
+		self.c.call("finalize", self.deal_id, sender=BRAND)
+		self.assertEqual(self.c.status(self.deal_id), "VERIFYING")
+
 		self.c.warp(hypebond.STALE_WINDOW)
 		self.c.call("claim_timeout", self.deal_id, sender=BRAND)
 		self.assertEqual(self.c.status(self.deal_id), "REFUNDED")
 		self.assertEqual(self.c.balance(BRAND), 0)
 		self.assertEqual(self.c.balance(INFLUENCER), 0)
+
+	def test_silent_brand_cannot_time_out_a_passing_post(self):
+		"""THE fairness invariant of the stale window.
+
+		VERIFYING means the initial check PASSED. Left as a pure clock, the
+		brand could say nothing for the whole window and reclaim the escrow
+		from a post that was live and passing the entire time, purely because
+		nobody called `finalize`. A timeout is an escape hatch for a verdict
+		that failed, never a substitute for one that was never requested.
+		"""
+		self.c.submit_passing_post(self.deal_id)
+		self.c.warp_days(3.1)
+		self.c.warp(hypebond.STALE_WINDOW + 1)  # clock alone is satisfied
+		for sender in (BRAND, STRANGER):
+			with self.subTest(sender=sender.as_hex):
+				with self.assertReverts("finalize has not been attempted"):
+					self.c.call("claim_timeout", self.deal_id, sender=sender)
+		self.assertEqual(self.c.status(self.deal_id), "VERIFYING")
+		self.assertEqual(self.c.host.transfers, [], "escrow untouched")
+
+		# The influencer's post is still up: the deal settles their way, months
+		# after the brand could have taken it under the old rule.
+		self.c.program_page("gm from @hypebond #ad", POST_URL)
+		self.c.program_verdict(overall=True)
+		self.c.call("finalize", self.deal_id, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "PAID")
+		self.assertEqual(self.c.balance(INFLUENCER), 3 * GEN // 2)
+
+	def test_a_failed_finalize_attempt_unlocks_the_timeout(self):
+		"""The brand is never stuck behind the guard: they can make the
+		attempt themselves, and a fetch that keeps failing is an attempt."""
+		self.c.submit_passing_post(self.deal_id)
+		self.c.warp_days(3.1)
+		self.c.program_fetch_failure()
+		self.c.call("finalize", self.deal_id, sender=BRAND)
+		# Unreachable, unconfirmed — still VERIFYING, but a verdict WAS sought.
+		self.assertEqual(self.c.status(self.deal_id), "VERIFYING")
+		self.c.warp(hypebond.STALE_WINDOW + 1)
+		self.c.call("claim_timeout", self.deal_id, sender=BRAND)
+		self.assertEqual(self.c.status(self.deal_id), "REFUNDED")
+
+	def test_resubmitting_during_grace_cannot_extend_the_stale_clock(self):
+		"""`submitted_at` moves on every submission, so anchoring the SUBMITTED
+		timeout to it would let an influencer buy another STALE_WINDOW of
+		locked escrow per resubmission — the same hole `grace_until` closes by
+		being set once. The clock hangs off the FIRST submission instead.
+		"""
+		self.c.program_page("bad post", POST_URL)
+		self.c.program_verdict(overall=False)
+		self.c.call("submit_post", self.deal_id, POST_URL, sender=INFLUENCER)
+		self.assertEqual(self.c.status(self.deal_id), "GRACE_PERIOD")
+		first = self.c.deal(self.deal_id)["first_submitted_at"]
+
+		# Resubmit a day later into a check that never reaches a verdict.
+		self.c.warp_days(1)
+		self.c.program_consensus_failure()
+		self.c.call("submit_post", self.deal_id, POST_URL, sender=INFLUENCER)
+		d = self.c.deal(self.deal_id)
+		self.assertEqual(d["status"], "SUBMITTED")
+		self.assertEqual(d["first_submitted_at"], first, "anchor never moves")
+		self.assertGreater(d["submitted_at"], first, "but the latest one does")
+
+		# 14 days after the FIRST submission, not the second.
+		self.c.warp(hypebond.STALE_WINDOW - SECONDS_PER_DAY + 1)
+		self.c.call("claim_timeout", self.deal_id, sender=BRAND)
+		self.assertEqual(self.c.status(self.deal_id), "REFUNDED")
 
 	def test_stuck_submitted_deal_is_recoverable(self):
 		"""If verification keeps erroring the deal parks at SUBMITTED. Escrow
@@ -872,6 +1078,96 @@ class TestClaimTimeout(ChainTest):
 		self.c.call("claim_timeout", self.deal_id, sender=BRAND)
 		self.assertEqual(self.c.status(self.deal_id), "REFUNDED")
 		self.assertEqual(self.c.balance(BRAND), 0)
+
+
+# ---------------------------------------------------------------- index hygiene
+
+
+class TestPruneDeals(ChainTest):
+	"""The cleanup half of the spam defence.
+
+	`create_deal` appends to the named influencer's index whether they asked
+	for it or not, so MIN_ESCROW alone only prices the attack. What closes it
+	is that the victim can clear the list themselves: `decline_deal` settles
+	the spam instantly and `prune_deals` compacts it out — neither of which
+	needs the spammer to cooperate.
+	"""
+
+	def _ids(self, addr_: Address) -> list[int]:
+		page = self.c.view("get_influencer_deals", addr_.as_hex, 0, 50)
+		return sorted(d["id"] for d in page)
+
+	def test_declined_spam_can_be_cleared_without_the_spammer(self):
+		spam = [
+			self.c.create_deal(brand=STRANGER, escrow=hypebond.MIN_ESCROW)
+			for _ in range(5)
+		]
+		real = self.c.create_deal(escrow=2 * GEN)
+		self.assertEqual(self._ids(INFLUENCER), sorted(spam + [real]))
+
+		for deal_id in spam:
+			self.c.call("decline_deal", deal_id, sender=INFLUENCER)
+		removed = self.c.call("prune_deals", 50, sender=INFLUENCER)
+		self.assertEqual(int(removed), 5)
+		self.assertEqual(self._ids(INFLUENCER), [real], "only the real deal remains")
+
+	def test_live_deals_are_never_pruned(self):
+		"""Pruning must not be a way to hide a deal you owe work on."""
+		live = self.c.create_deal(escrow=2 * GEN)
+		self.assertEqual(int(self.c.call("prune_deals", 50, sender=INFLUENCER)), 0)
+		self.assertEqual(self._ids(INFLUENCER), [live])
+
+	def test_pruning_only_touches_the_callers_own_index(self):
+		mine = self.c.create_deal(escrow=2 * GEN)
+		theirs = self.c.create_deal(influencer=addr(0x77), escrow=2 * GEN)
+		self.c.call("decline_deal", mine, sender=INFLUENCER)
+		self.c.call("decline_deal", theirs, sender=addr(0x77))
+
+		self.c.call("prune_deals", 50, sender=INFLUENCER)
+		self.assertEqual(self._ids(INFLUENCER), [])
+		self.assertEqual(self._ids(addr(0x77)), [theirs], "someone else's index")
+
+	def test_the_brands_own_index_is_pruned_too(self):
+		deal_id = self.c.create_deal(escrow=2 * GEN)
+		self.c.call("decline_deal", deal_id, sender=INFLUENCER)
+		self.c.call("prune_deals", 50, sender=BRAND)
+		self.assertEqual(self.c.view("get_brand_deals", BRAND.as_hex, 0, 50), [])
+
+	def test_the_step_budget_bounds_the_loop(self):
+		"""No public method may walk an array whose length an attacker chose."""
+		ids = [
+			self.c.create_deal(brand=STRANGER, escrow=hypebond.MIN_ESCROW)
+			for _ in range(6)
+		]
+		for deal_id in ids:
+			self.c.call("decline_deal", deal_id, sender=INFLUENCER)
+
+		self.assertEqual(int(self.c.call("prune_deals", 2, sender=INFLUENCER)), 2)
+		self.assertEqual(len(self._ids(INFLUENCER)), 4, "batch stopped at the budget")
+		# Calling again resumes where the batch left off.
+		self.assertEqual(int(self.c.call("prune_deals", 50, sender=INFLUENCER)), 4)
+		self.assertEqual(self._ids(INFLUENCER), [])
+
+	def test_step_budget_is_capped_and_must_be_positive(self):
+		deal_id = self.c.create_deal(escrow=2 * GEN)
+		self.c.call("decline_deal", deal_id, sender=INFLUENCER)
+		with self.assertReverts("max_steps must be positive"):
+			self.c.call("prune_deals", 0, sender=INFLUENCER)
+		# An oversized request is clamped, not rejected.
+		self.assertEqual(
+			int(self.c.call("prune_deals", 10**9, sender=INFLUENCER)), 1
+		)
+
+	def test_a_pruned_deal_is_still_readable_by_id(self):
+		"""Pruning drops an index entry, never the deal itself — the escrow's
+		history has to stay auditable by anyone holding the id."""
+		deal_id = self.c.create_deal(escrow=2 * GEN)
+		self.c.call("decline_deal", deal_id, sender=INFLUENCER)
+		self.c.call("prune_deals", 50, sender=INFLUENCER)
+		self.assertEqual(self.c.deal(deal_id)["status"], "DECLINED")
+
+	def test_pruning_an_empty_index_is_a_no_op(self):
+		self.assertEqual(int(self.c.call("prune_deals", 50, sender=STRANGER)), 0)
 
 
 # ---------------------------------------------------------------- escrow
@@ -898,7 +1194,7 @@ class TestEscrowAccounting(ChainTest):
 		self.assertEqual(self.c.host.contract_balance, 9 * GEN)
 
 	def test_every_terminal_path_conserves_value(self):
-		paths = ["cancel", "timeout", "paid", "failed"]
+		paths = ["cancel", "decline", "timeout", "paid", "failed"]
 		for path in paths:
 			with self.subTest(path=path):
 				c = Chain()
@@ -906,6 +1202,8 @@ class TestEscrowAccounting(ChainTest):
 				deal_id = c.create_deal(escrow=escrow)
 				if path == "cancel":
 					c.cancel_deal(deal_id)
+				elif path == "decline":
+					c.call("decline_deal", deal_id, sender=INFLUENCER)
 				elif path == "timeout":
 					c.warp_days(14.1)
 					c.call("claim_timeout", deal_id, sender=BRAND)
@@ -1341,7 +1639,8 @@ class TestViews(ChainTest):
 		d = self.c.deal(deal_id)
 		expected = {
 			"id", "brand", "influencer", "amount", "terms", "post_url", "platform",
-			"min_live_days", "created_at", "submitted_at", "verify_after",
+			"min_live_days", "created_at", "submitted_at", "first_submitted_at",
+			"verify_after",
 			"grace_until", "last_check_at", "cancel_requested_at",
 			"unreachable_since", "status", "verdict_reason",
 			"checks_passed", "settled",
@@ -1376,7 +1675,7 @@ class TestViews(ChainTest):
 			getattr(hypebond, name)
 			for name in (
 				"FUNDED", "SUBMITTED", "GRACE_PERIOD", "VERIFYING",
-				"PAID", "VERIFIED_FAIL", "REFUNDED", "CANCELLED",
+				"PAID", "VERIFIED_FAIL", "REFUNDED", "CANCELLED", "DECLINED",
 			)
 		}
 		self.assertEqual(ts_statuses, py_statuses)

@@ -22,13 +22,13 @@ html {
 
 body {
   @apply bg-void text-bone font-body antialiased;
-  /* Decorative overhangs (the hero glow, the step-03 seal) must never open a
-     sideways scroll on a phone. `clip` over `hidden` — `hidden` turns the
-     element into a scroll container and kills `position: sticky` inside it,
-     which the app header and the docs ToC both rely on. `hidden` stays first
-     as the fallback for Safari < 16. */
+  /* Backstop against a decorative overhang opening a sideways scroll on a
+     phone. It has to stay on `body` with `html` left `visible`: that is the
+     one arrangement where the value reaches the viewport *and* the sticky
+     header / docs ToC keep working. `overflow-x: clip` here is not propagated
+     to the viewport at all, and moving `hidden` up to `html` stops suppressing
+     the scroll — both were measured, not assumed. */
   overflow-x: hidden;
-  overflow-x: clip;
 }
 
 /* Tap targets: iOS shows a grey flash on tap that reads as a rendering bug on

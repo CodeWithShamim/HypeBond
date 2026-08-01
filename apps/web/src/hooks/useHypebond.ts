@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LIVE_STATUSES, type Deal, type Platform } from "@hypebond/shared";
+import {
+  LIVE_STATUSES,
+  PRUNE_MAX_STEPS,
+  type CancelStep,
+  type Deal,
+  type Platform,
+} from "@hypebond/shared";
 import {
   awaitNewBrandDealId,
   latestBrandDealId,
@@ -138,14 +144,28 @@ export function useFinalize() {
 }
 
 /**
- * `cancel_deal` is two calls: the first opens the 24h notice, the second
- * completes the refund. Reporting "Bond cancelled" for the first one would be
- * a lie about where the escrow is, so the verb follows the step.
+ * `cancel_deal` is a multi-step flow: the first call opens the 24h notice, a
+ * call inside the window that follows completes the refund, and a call after
+ * that window has expired re-opens a fresh notice instead of settling.
+ * Reporting "Bond cancelled" for anything but the settling call would be a lie
+ * about where the escrow is, so the verb follows the step.
  */
-export function useCancelDeal(noticeAlreadyOpen = false) {
-  return useChainMutation<{ dealId: number }, string>(
-    noticeAlreadyOpen ? "Bond cancelled" : "Cancellation started",
-    (w, a) => writes.cancelDeal(w, a.dealId)
+export function useCancelDeal(step: CancelStep = "open") {
+  const verb =
+    step === "ready"
+      ? "Bond cancelled"
+      : step === "restart"
+        ? "Cancellation restarted"
+        : "Cancellation started";
+  return useChainMutation<{ dealId: number }, string>(verb, (w, a) =>
+    writes.cancelDeal(w, a.dealId)
+  );
+}
+
+/** Creator refuses a deal they were named in — brand refunded on the spot. */
+export function useDeclineDeal() {
+  return useChainMutation<{ dealId: number }, string>("Bond declined", (w, a) =>
+    writes.declineDeal(w, a.dealId)
   );
 }
 
@@ -153,5 +173,17 @@ export function useClaimTimeout() {
   return useChainMutation<{ dealId: number }, string>(
     "Timeout claimed",
     (w, a) => writes.claimTimeout(w, a.dealId)
+  );
+}
+
+/**
+ * Compact settled bonds out of the caller's own indexes. The contract clamps
+ * the batch, so this is the cleanup for a dashboard someone else filled with
+ * deals the user never agreed to.
+ */
+export function usePruneDeals() {
+  return useChainMutation<{ maxSteps?: number }, string>(
+    "Dashboard cleaned up",
+    (w, a) => writes.pruneDeals(w, a.maxSteps ?? PRUNE_MAX_STEPS)
   );
 }

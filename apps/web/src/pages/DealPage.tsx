@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   cancelEffectiveAt,
+  cancelExpiresAt,
   cancelPending,
+  cancelStep,
   checkCooldownUntil,
   dealSerial,
   isValidPostUrl,
@@ -15,6 +17,7 @@ import {
   useCancelDeal,
   useClaimTimeout,
   useDeal,
+  useDeclineDeal,
   useFinalize,
   useRecheckPost,
   useSubmitPost,
@@ -116,12 +119,16 @@ export function DealPage() {
   const wallet = useWallet();
   const now = useNow();
 
-  // Derived before the mutation hooks: `cancel_deal` is a two-step flow and
-  // the toast verb depends on which step this call is.
+  // Derived before the mutation hooks: `cancel_deal` is a multi-step flow and
+  // the toast verb depends on which step this call is. A call past the
+  // window's expiry re-opens the notice rather than settling, so reporting it
+  // as "Bond cancelled" would misstate where the escrow is.
   const cancelIsPending = !!deal && cancelPending(deal);
+  const step = deal ? cancelStep(deal, now / 1000) : "open";
 
   const finalize = useFinalize();
-  const cancel = useCancelDeal(cancelIsPending);
+  const cancel = useCancelDeal(step);
+  const decline = useDeclineDeal();
   const timeout = useClaimTimeout();
   const recheck = useRecheckPost();
 
@@ -159,7 +166,14 @@ export function DealPage() {
     () => countdownTo(cancelAt, now),
     [cancelAt, now]
   );
-  const cancelReady = cancelIsPending && cancelCountdown.done;
+  // The matured notice expires, so the brand can never sit on a silent
+  // instant-cancel option. Show that clock too — it is the influencer's
+  // guarantee, not just the brand's deadline.
+  const cancelExpiry = deal ? cancelExpiresAt(deal) : 0;
+  const cancelExpiryCountdown = useMemo(
+    () => countdownTo(cancelExpiry, now),
+    [cancelExpiry, now]
+  );
   // Final check could not reach the post. Not settled — awaiting confirmation.
   const postUnreachable = !!deal && deal.unreachable_since > 0;
 
@@ -285,7 +299,9 @@ export function DealPage() {
                   ? "Bag released"
                   : settledFail
                     ? "Bond broken"
-                    : deal.status === "CANCELLED" || deal.status === "REFUNDED"
+                    : deal.status === "CANCELLED" ||
+                        deal.status === "REFUNDED" ||
+                        deal.status === "DECLINED"
                       ? "Bond closed"
                       : "Next move"}
               </h2>
@@ -355,6 +371,26 @@ export function DealPage() {
                     graceCountdown &&
                     !graceCountdown.done)) && <SubmitPostForm deal={deal} />}
 
+              {/* Anyone can address a bond to anyone, so the named creator
+                  needs a way to refuse one they never agreed to — without
+                  waiting out 14 days of someone else's escrow. */}
+              {isInfluencer && deal.status === "FUNDED" && (
+                <div className="mt-5 w-full space-y-2 border-t-2 border-static pt-5">
+                  <Button
+                    variant="ghost"
+                    loading={decline.isPending}
+                    onClick={() => decline.mutate({ dealId: deal.id })}
+                  >
+                    Decline this bond
+                  </Button>
+                  <p className="font-mono text-xs text-bone/40">
+                    Refunds the brand immediately and closes the bond. Use this
+                    for anything you did not agree to — you can clear declined
+                    bonds off your dashboard afterwards.
+                  </p>
+                </div>
+              )}
+
               {/* waiting on influencer, viewer is not the influencer */}
               {deal.status === "FUNDED" && !isInfluencer && (
                 <p className="text-sm text-bone/50">
@@ -364,7 +400,7 @@ export function DealPage() {
                 </p>
               )}
 
-              {/* initial check pending / errored */}
+              {/* initial check pending / errored / unreachable */}
               {deal.status === "SUBMITTED" && (
                 <div className="space-y-4">
                   <BondingLoader
@@ -374,6 +410,21 @@ export function DealPage() {
                       "checking mentions and links…",
                     ]}
                   />
+                  {/* An unreachable page no longer drops straight into the
+                      grace period, so SUBMITTED can also mean "could not
+                      look yet" — say which one this is. */}
+                  {postUnreachable && (
+                    <ErrorStrip>
+                      <span className="font-bold uppercase">
+                        Post could not be reached:
+                      </span>{" "}
+                      the validators could not load the page. That does not
+                      count against you yet — platforms rate-limit, so this
+                      only becomes a failed check if the page stays unreachable.
+                      Your fix window has not started. If your post is live,
+                      re-run the check shortly.
+                    </ErrorStrip>
+                  )}
                   <p className="font-mono text-xs text-bone/40">
                     If the check errored out, anyone can re-run it — it never
                     auto-passes.
@@ -446,6 +497,32 @@ export function DealPage() {
                       stays open to anyone for 14 days — it never auto-passes.
                     </p>
                   )}
+                  {/* The reclaim clock only starts once a finalize has been
+                      ATTEMPTED and failed, so this is never a surprise — but
+                      the party who loses the escrow to it is the creator, and
+                      they are the one who has to see the deadline. */}
+                  {staleAt !== null && (
+                    <ErrorStrip>
+                      <span className="font-bold uppercase">
+                        Finalize before {formatDate(staleAt)}:
+                      </span>{" "}
+                      {isInfluencer ? (
+                        <>
+                          a finalization has already been attempted and could
+                          not reach a verdict. If none succeeds by then, the
+                          brand can reclaim the escrow — even though your post
+                          is live. Keep retrying: anyone can finalize, and it
+                          never auto-passes against you.
+                        </>
+                      ) : (
+                        <>
+                          a finalization has already been attempted and could
+                          not reach a verdict. If none succeeds by then, the
+                          escrow can be reclaimed for the brand.
+                        </>
+                      )}
+                    </ErrorStrip>
+                  )}
                   {!wallet.address && (
                     <p className="font-mono text-xs text-bone/40">
                       connect a wallet to trigger finalization
@@ -479,16 +556,30 @@ export function DealPage() {
                       <Button
                         variant="danger"
                         loading={cancel.isPending}
-                        disabled={!cancelReady}
+                        disabled={step === "waiting"}
                         onClick={() => cancel.mutate({ dealId: deal.id })}
                       >
-                        {cancelReady
+                        {step === "ready"
                           ? "Complete cancellation & refund"
-                          : `Cancellable in ${countdownLabel(cancelCountdown)}`}
+                          : step === "restart"
+                            ? "Restart cancellation (24h notice)"
+                            : `Cancellable in ${countdownLabel(cancelCountdown)}`}
                       </Button>
                       <p className="font-mono text-xs text-bone/40">
                         Notice opened {formatDate(deal.cancel_requested_at)}.
+                        {step === "ready" &&
+                          !cancelExpiryCountdown.done &&
+                          ` Expires in ${countdownLabel(cancelExpiryCountdown)}.`}
                       </p>
+                      {step === "restart" && (
+                        <p className="font-mono text-xs text-bone/40">
+                          This notice expired, so it no longer cancels anything
+                          — the button opens a fresh 24-hour one. A matured
+                          notice cannot be held open indefinitely, or it would
+                          become a standing option to pull the escrow the
+                          moment a post goes live.
+                        </p>
+                      )}
                     </div>
                   )}
                   {submitTimeoutReady && (
@@ -558,7 +649,14 @@ export function DealPage() {
               {deal.status === "REFUNDED" && (
                 <p className="text-sm text-bone/50">
                   {deal.verdict_reason ||
-                    "Escrow was reclaimed by the brand after a timeout."}
+                    "Escrow was reclaimed for the brand after a timeout."}
+                </p>
+              )}
+              {deal.status === "DECLINED" && (
+                <p className="text-sm text-bone/50">
+                  {isInfluencer
+                    ? "You declined this bond. The brand was refunded in full."
+                    : "The creator declined this bond. Escrow refunded in full."}
                 </p>
               )}
             </StickerCard>

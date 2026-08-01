@@ -1,7 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
-import { useBrandDeals, useInfluencerDeals } from "@/hooks/useHypebond";
+import { dealAttention, prunableCount } from "@hypebond/shared";
+import {
+  useBrandDeals,
+  useInfluencerDeals,
+  usePruneDeals,
+} from "@/hooks/useHypebond";
 import { useWallet } from "@/lib/wallet";
 import { errorMessage } from "@/lib/format";
 import { CONTRACT_CONFIGURED } from "@/lib/genlayer";
@@ -20,6 +25,15 @@ export function Dashboard() {
   const brand = useBrandDeals(wallet.address);
   const influencer = useInfluencerDeals(wallet.address);
   const active = tab === "brand" ? brand : influencer;
+  const prune = usePruneDeals();
+
+  // Deadlines are the whole point of the to-do badges, so they cannot be
+  // frozen at mount — a bond crosses into "urgent" while the tab sits open.
+  const [nowSec, setNowSec] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const t = setInterval(() => setNowSec(Date.now() / 1000), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!CONTRACT_CONFIGURED) {
     return (
@@ -39,7 +53,13 @@ export function Dashboard() {
     );
   }
 
+  // `prune_deals` swap-removes, so the on-chain index is not in creation
+  // order after a cleanup. Sorting by id here is what keeps the grid stable.
   const deals = [...(active.data ?? [])].sort((a, b) => b.id - a.id);
+  const urgent = deals.filter(
+    (d) => dealAttention(d, tab, nowSec)?.urgent
+  ).length;
+  const prunable = prunableCount(deals);
 
   return (
     <div className="space-y-6">
@@ -48,6 +68,22 @@ export function Dashboard() {
           Your <span className="text-bond">bonds</span>
         </h1>
       </PageItem>
+
+      {/* An unwatched clock is how a creator loses a passing bond, so the
+          count goes at the top rather than only on each card. */}
+      {urgent > 0 && (
+        <PageItem>
+          <ErrorStrip>
+            <span className="font-bold uppercase">
+              {urgent} bond{urgent === 1 ? "" : "s"} need
+              {urgent === 1 ? "s" : ""} you:
+            </span>{" "}
+            {tab === "influencer"
+              ? "a window is closing on these. Letting one lapse hands the escrow back to the brand."
+              : "these have a window you can act on now."}
+          </ErrorStrip>
+        </PageItem>
+      )}
 
       {/* tabs */}
       <PageItem>
@@ -103,10 +139,31 @@ export function Dashboard() {
             }
           />
         ) : (
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {deals.map((d) => (
-              <DealCard key={d.id} deal={d} />
-            ))}
+          <div className="space-y-5">
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {deals.map((d) => (
+                <DealCard key={d.id} deal={d} role={tab} nowSec={nowSec} />
+              ))}
+            </div>
+            {/* Anyone can address a bond to any wallet, so a creator's list is
+                not something they fully control. Closed bonds can be cleared
+                out without the other party's cooperation. */}
+            {prunable > 0 && (
+              <div className="space-y-2 border-t-2 border-static pt-5">
+                <Button
+                  variant="ghost"
+                  loading={prune.isPending}
+                  onClick={() => prune.mutate({})}
+                >
+                  Clear {prunable} closed bond{prunable === 1 ? "" : "s"}
+                </Button>
+                <p className="font-mono text-xs text-bone/40">
+                  Removes settled bonds from your dashboard only. They stay
+                  on-chain and readable by link — nothing is deleted, and live
+                  bonds are never touched.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </PageItem>

@@ -14,7 +14,9 @@ export function timelineNodes(deal: Deal): Node[] {
   const submitted = deal.submitted_at > 0;
   const settledPass = s === "PAID";
   const settledFail = s === "VERIFIED_FAIL";
-  const dead = s === "REFUNDED" || s === "CANCELLED";
+  // Closed without a verdict. Every one of these ends with the escrow back
+  // with the brand, so the tail of the timeline reads the same for all three.
+  const dead = s === "REFUNDED" || s === "CANCELLED" || s === "DECLINED";
 
   const nodes: Node[] = [
     {
@@ -79,7 +81,9 @@ export function timelineNodes(deal: Deal): Node[] {
           : dead
             ? s === "CANCELLED"
               ? "cancelled by brand"
-              : "reclaimed by brand"
+              : s === "DECLINED"
+                ? "declined by creator"
+                : "reclaimed for brand"
             : "—",
       state: settledPass ? "done" : settledFail || dead ? "fail" : "todo",
     },

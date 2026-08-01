@@ -116,7 +116,11 @@ export function Landing() {
           {!reduced && (
             <div
               aria-hidden
-              className="bg-bond animate-spinSlow absolute -top-10 right-0 -z-10 h-48 w-48 rounded-full opacity-25 blur-2xl sm:h-64 sm:w-64 md:h-96 md:w-96"
+              // Inset from the right by more than the spin's corner sweep. The
+              // box rotates, so its bounding box grows to side×√2 — i.e. up to
+              // side×0.207 past each edge — and at right-0 that reached past
+              // the viewport and opened a sideways scroll at every width.
+              className="bg-bond animate-spinSlow absolute -top-10 right-6 -z-10 h-48 w-48 rounded-full opacity-25 blur-2xl sm:right-10 sm:h-64 sm:w-64 md:right-12 md:h-96 md:w-96"
             />
           )}
           <h1 className="font-display text-[17vw] font-bold uppercase leading-[0.9] tracking-tighter text-bone md:text-[7.5rem]">
@@ -167,7 +171,12 @@ export function Landing() {
       <PageItem>
         <section>
           <SectionTitle>The deal checks itself</SectionTitle>
-          <div className="mt-8 grid gap-6 md:grid-cols-3">
+          {/* The step-03 seal deliberately overhangs the last card. Give that
+              overhang a gutter of its own (borrowed from <main>'s padding) and
+              clip there, so it can never reach the viewport edge — while
+              off-screen it is still parked at its whileInView start scale of
+              1.6, which is far wider than the seal ever appears. */}
+          <div className="mt-8 grid gap-6 md:-mx-6 md:grid-cols-3 md:overflow-x-clip md:px-6">
             <StepCard
               n="01"
               title="Bond the hype"

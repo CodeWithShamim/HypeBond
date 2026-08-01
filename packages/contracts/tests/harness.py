@@ -172,6 +172,10 @@ class Chain:
 	def program_fetch_failure(self, exc: Exception | None = None) -> None:
 		self.host.web_error = exc or RuntimeError("fetch failed")
 
+	def clear_fetch_failure(self) -> None:
+		"""End a programmed outage — `web_error` outranks any programmed page."""
+		self.host.web_error = None
+
 	def program_verdict(
 		self,
 		*,

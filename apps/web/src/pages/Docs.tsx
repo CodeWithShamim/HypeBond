@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   CANCEL_NOTICE_HOURS,
+  CANCEL_WINDOW_HOURS,
   DEAL_STATUSES,
   GRACE_HOURS,
   PLATFORM_DOMAINS,
   PLATFORM_LABELS,
   PLATFORMS,
+  PRUNE_MAX_STEPS,
   RECHECK_COOLDOWN_SECONDS,
   STALE_WINDOW_DAYS,
   SUBMIT_WINDOW_DAYS,
@@ -20,7 +22,7 @@ import { shortAddr } from '@/lib/format';
 
 /**
  * The manual. Everything a second engineer (or a judge, or future you) needs
- * to understand HypeBond without reading all 864 lines of the contract.
+ * to understand HypeBond without reading all 1,192 lines of the contract.
  *
  * Numbers, statuses and platform rules are imported from `@hypebond/shared`
  * rather than retyped, so this page cannot drift away from the code the way
@@ -125,17 +127,17 @@ function TableOfContents() {
 const LAST_RUN = {
   date: '2026-08-01',
   deployed: '0xd557dCf363cE191d7A5768fC656d9e4E03d8cA85',
-  contractTests: 124,
-  webTests: 157,
+  contractTests: 145,
+  webTests: 177,
   gates: [
-    ['pnpm lint:genvm', 'passed — 10 methods, 4 view / 6 write'],
-    ['pnpm test:contract', '124 passed'],
+    ['pnpm lint:genvm', 'passed — 12 methods, 4 view / 8 write'],
+    ['pnpm test:contract', '145 passed'],
     ['pnpm typecheck', 'clean'],
-    ['pnpm test:web', '157 passed, 13 files'],
+    ['pnpm test:web', '177 passed, 14 files'],
     ['pnpm build', 'clean'],
     ['pnpm verify', 'exit 0'],
-    ['pnpm test:smoke (deployed)', '26 passed, 0 failed'],
-    ['verify-fixes.mjs (deployed)', '15 passed, 0 failed'],
+    ['pnpm test:smoke (deployed)', 'redeploy pending'],
+    ['verify-fixes.mjs (deployed)', 'redeploy pending'],
   ] as const,
 };
 
@@ -340,7 +342,8 @@ const STATUS_ROWS: Record<DealStatus, StatusRow> = {
     money: 'held',
   },
   VERIFYING: {
-    meaning: 'Initial check passed. Waiting out the agreed live window before final verification.',
+    meaning:
+      'Initial check passed. Waiting out the agreed live window before final verification. The timeout here needs a finalize to have been attempted and failed — a silent brand cannot reclaim a passing post.',
     next: 'finalize · claim_timeout',
     money: 'held',
   },
@@ -355,12 +358,19 @@ const STATUS_ROWS: Record<DealStatus, StatusRow> = {
     money: '→ brand',
   },
   REFUNDED: {
-    meaning: 'Brand reclaimed the escrow after a window lapsed.',
+    meaning:
+      'Escrow reclaimed for the brand after a window lapsed. Anyone may trigger it — the payee is always the brand.',
     next: 'terminal',
     money: '→ brand',
   },
   CANCELLED: {
-    meaning: `Brand cancelled before any post was submitted, after the ${CANCEL_NOTICE_HOURS}h notice.`,
+    meaning: `Brand cancelled before any post was submitted, inside the window that opens ${CANCEL_NOTICE_HOURS}h after the notice.`,
+    next: 'terminal',
+    money: '→ brand',
+  },
+  DECLINED: {
+    meaning:
+      'The named creator refused a deal they never agreed to. No notice window is needed — they are refusing before doing any work.',
     next: 'terminal',
     money: '→ brand',
   },
@@ -835,7 +845,7 @@ export function Docs() {
             <Section
               id="contract-api"
               title="Contract API"
-              lede="Six write methods, four views, eight events. Addresses cross calldata as 0x-hex strings."
+              lede="Eight write methods, four views, ten events. Addresses cross calldata as 0x-hex strings."
             >
               <H3>Writes</H3>
               <div className="space-y-4">
@@ -907,19 +917,77 @@ export function Docs() {
                     public notice; <C>submit_post</C> stays open throughout and a submission voids the
                     cancellation for good. Once a URL is in, the brand's exit is a verdict, not a button.
                   </p>
+                  <p>
+                    The matured notice also <strong>expires</strong> after a further{' '}
+                    {CANCEL_WINDOW_HOURS} hours. A notice that stayed valid for the rest of the deal
+                    would defend only its own first day: open one up front, let it mature, and the
+                    brand holds a standing option to cancel the instant a post appears. Past the
+                    window the call re-opens a fresh notice instead of settling, so exercising the
+                    option always costs another public {CANCEL_NOTICE_HOURS} hours.
+                  </p>
+                </Method>
+
+                <Method
+                  sig="decline_deal(deal_id)"
+                  caller="the deal's influencer"
+                  from="FUNDED"
+                >
+                  <p>
+                    The creator's refusal. <C>create_deal</C> names an influencer who never agreed
+                    to anything — anyone can address a bond to any wallet — so the named party needs
+                    an exit that is not "perform the work" or "wait out {SUBMIT_WINDOW_DAYS} days of
+                    someone else's escrow". Refunds the brand immediately and closes the bond.
+                  </p>
+                  <p>
+                    No notice window, because the asymmetry that makes <C>cancel_deal</C> dangerous
+                    runs the other way: the creator is refusing <em>before</em> doing any work, so
+                    there is nothing of theirs to take.
+                  </p>
                 </Method>
 
                 <Method
                   sig="claim_timeout(deal_id)"
-                  caller="the brand"
+                  caller="anyone (the brand is always the payee)"
                   from="FUNDED · SUBMITTED · GRACE_PERIOD · VERIFYING"
                 >
                   <p>
                     The escape hatch, gated per status: {SUBMIT_WINDOW_DAYS} days from creation with
                     no post; the {GRACE_HOURS}-hour grace window lapsed; or {STALE_WINDOW_DAYS} days
-                    of a check that never resolved (from <C>submitted_at</C> for <C>SUBMITTED</C>,
-                    from <C>verify_after</C> for <C>VERIFYING</C>). Writes a human-readable reason
-                    into <C>verdict_reason</C> before refunding.
+                    of a check that never resolved (from <C>first_submitted_at</C> for{' '}
+                    <C>SUBMITTED</C> — the first submission, so resubmitting during grace cannot push
+                    it out — and from <C>verify_after</C> for <C>VERIFYING</C>). Writes a
+                    human-readable reason into <C>verdict_reason</C> before refunding.
+                  </p>
+                  <p>
+                    <C>VERIFYING</C> carries one extra condition: a <C>finalize</C> must have been{' '}
+                    <strong>attempted</strong> since the live window ended and failed to settle.
+                    Unlike <C>SUBMITTED</C>, that status is no evidence anything went wrong — without
+                    the check, a brand could stay silent for {STALE_WINDOW_DAYS} days and reclaim the
+                    escrow from a post that was live and passing the whole time. A timeout is an
+                    escape hatch for a verdict that failed, not a substitute for one nobody asked for.
+                  </p>
+                  <p>
+                    Callable by anyone because the payee is fixed at the brand — there is nothing to
+                    steal by calling it, and an unresponsive brand should not be able to park a dead
+                    bond in a live status forever.
+                  </p>
+                </Method>
+
+                <Method
+                  sig="prune_deals(max_steps) → u256"
+                  caller="anyone (own indexes only)"
+                  from="any status — settled entries only"
+                >
+                  <p>
+                    Compacts <strong>settled</strong> bonds out of the caller's own brand and creator
+                    indexes, in batches the caller sizes (clamped at {PRUNE_MAX_STEPS}, because a
+                    public method must never loop over a length an attacker chose). Live bonds are
+                    never touched and nothing is deleted — a pruned bond stays readable by id.
+                  </p>
+                  <p>
+                    This is the cleanup half of the spam defence. <C>MIN_ESCROW</C> only prices the
+                    attack; what closes it is that the victim can clear the list without the
+                    spammer's cooperation — <C>decline_deal</C> settles the spam, this removes it.
                   </p>
                 </Method>
               </div>
